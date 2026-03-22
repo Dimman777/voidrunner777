@@ -1,0 +1,1294 @@
+// ═══════════════════════════════════════════════════════════
+//  NPC FACTORY — creates properly typed NPC entities
+// ═══════════════════════════════════════════════════════════
+function spawnCapital(pirateBase){
+  // 5% + (faction.str/100)*20% chance of dreadnought
+  const fid = pirateBase.factionId || 'f07';
+  const fStr = FACTIONS[fid]?.str || 50;
+  const dreadChance = 0.05 + (fStr/100)*0.2;
+  const type = Math.random() < dreadChance ? 'dreadnought' : 'frigate';
+  const def = CAP_DEFS[type];
+
+  const a=Math.random()*PI2, d=300+Math.random()*400;
+  const pos = v3add(pirateBase.pos, v3(Math.cos(a)*d,(Math.random()-.5)*80,Math.sin(a)*d));
+
+  const components = def.components.map(c=>({
+    name:c.name, hp:c.hp, maxHp:c.hp, isCore:c.isCore,
+    turrets:c.turrets, fireCd:1+Math.random()*2,
+  }));
+
+  const cap = {
+    isCapital: true,
+    capType: type,
+    name: def.name,
+    pos, vel:v3(0,0,0),
+    yaw:Math.random()*PI2, pitch:0,
+    speed:0, maxSpd:def.maxSpd, baseSpd:def.baseSpd,
+    turnRate: def.turn,
+    sz: def.sz,
+    col: pirateBase.col || '#ff4400',
+    model: scaleM(def.model, def.scale),
+    reward: def.reward,
+    components,
+    homeBase: pirateBase,
+    factionId: fid,
+    aiSt:'patrol', aiT:Math.random()*5, patT:null,
+    hostile:true,
+    // NPC compat fields
+    aiRole:'capital', hullKey:type,
+    armour:0, maxArmour:0,
+    struct: def.components.reduce((s,c)=>s+c.hp,0),
+    maxStruct: def.components.reduce((s,c)=>s+c.hp,0),
+    distressT:0, _cargo:[], _returning:false,
+    _fleeing:false, _fleeTimer:0, _fledDamaged:false, _fleeDir:v3(0,0,1),
+    _mercWpA:null, _mercWpB:null, _mercTarget:null, _mercEscort:false, _mercEscortNpc:null,
+  };
+
+  G.enemies.push(cap);
+  return cap;
+}
+
+function makeNPC(hullKey, aiRole, col, pos){
+  const hull = NPC_HULLS[hullKey];
+  const totalHP = hull.hp;
+  const armour = Math.round(totalHP * 0.6);
+  const struct = totalHP - armour;
+  const wpn = (hullKey === 'freighter_npc') ? null : pickEWpn();
+
+  // Engine tier scaling — ECFG values are calibrated to T3 baseline.
+  // Pick engine from faction tier range, then scale speed/turn.
+  const tierRange = FACTION_TIER_RANGE[aiRole] || [1,3];
+  const eng = pickNPCEngine(tierRange[0], tierRange[1]);
+  const spdMult  = eng.baseMaxSpd / NPC_ENGINE_BASELINE.baseMaxSpd;
+  const turnMult = eng.baseTurn   / NPC_ENGINE_BASELINE.baseTurn;
+
+  return {
+    hullKey, aiRole,
+    type: aiRole,
+    name: hull.name,
+    pos: pos || v3(0,0,0),
+    vel: v3(0,0,0),
+    yaw: Math.random()*PI2, pitch: 0,
+    speed: 0,
+    maxSpd: hull.maxSpd * spdMult,
+    baseSpd: hull.spd * spdMult,
+    turnRate: hull.turn * turnMult,
+    engineTier: eng.tier,
+    // Two-pool damage
+    armour, maxArmour: armour,
+    struct, maxStruct: struct,
+    hp: totalHP, maxHp: totalHP,
+    sz: hull.sz,
+    col: col || '#888888',
+    model: scaleM(hull.model, hull.scale),
+    reward: hull.reward,
+    // Weapon
+    wpn, fireCd: 0,
+    // AI state
+    aiSt: 'patrol', aiT: Math.random()*5,
+    hostile: false,
+    homeStation: null,
+    homeBase: null,
+    patT: null,
+    routeA: null,
+    routeB: null,
+    escortTarget: null,
+    fleeT: 0,
+    distressT: 0,
+    _cargo: [],
+    _returning: false,
+    // Pirate flee state
+    _fleeing: false,
+    _fleeTimer: 0,
+    _fledDamaged: false,
+    _fleeDir: v3(0,0,1),
+    _attacker: null,          // who last hit us (entity ref)
+    _combatTarget: null,      // who we're actively fighting (entity ref or 'player')
+    _distressCd: 0,           // distress ping cooldown for police
+    _noDistressTimer: 0,      // merc: time since last heard escort distress
+    // Merc waypoints
+    _mercWpA: null,
+    _mercWpB: null,
+    _mercTarget: null,
+    _mercEscort: false,
+    _mercEscortNpc: null,
+  };
+}
+
+function spawnNPC(aiRole, factionCol, stationA, stationB, pirateBase){
+  // Pick hull from faction distribution
+  const dist = FACTION_SPAWNS[aiRole] || FACTION_SPAWNS.militia;
+  const hullKey = pickHull(dist);
+
+  // Colour by role — mercs use faction colour (grey)
+  const col = factionCol || {
+    militia:'#4488ff', pirate:'#ff4400', cargo:'#44ff88',
+    merc:'#aaaaaa', corporate:'#cc44cc', recovery:'#ff9944',
+  }[aiRole] || '#888888';
+
+  // Position — mercs and cargo spawn near stations, not random
+  let pos;
+  if(pirateBase){
+    const a=Math.random()*PI2, d=200+Math.random()*400;
+    pos = v3add(pirateBase.pos, v3(Math.cos(a)*d, (Math.random()-.5)*100, Math.sin(a)*d));
+  } else if(stationA){
+    const a=Math.random()*PI2, d=150+Math.random()*500;
+    pos = v3add(stationA.pos, v3(Math.cos(a)*d, (Math.random()-.5)*100, Math.sin(a)*d));
+  } else if(aiRole==='merc'){
+    // Mercs always spawn near a station
+    const st = pickStation();
+    const a=Math.random()*PI2, d=150+Math.random()*300;
+    pos = v3add(st.pos, v3(Math.cos(a)*d, (Math.random()-.5)*60, Math.sin(a)*d));
+  } else {
+    const a=Math.random()*PI2, d=2000+Math.random()*5000;
+    pos = v3add(G.p.pos, v3(Math.cos(a)*d, (Math.random()-.5)*400, Math.sin(a)*d));
+  }
+
+  const e = makeNPC(hullKey, aiRole, col, pos);
+
+  // Role-specific setup
+  if(aiRole==='pirate'){
+    e.hostile = true;
+    e.homeBase = pirateBase || G.pBases[Math.floor(Math.random()*G.pBases.length)];
+    e.factionId = e.homeBase?.factionId || 'f07';
+  }
+  if(aiRole==='militia' || aiRole==='corporate'){
+    e.homeStation = stationA || pickStation();
+    e.factionId = aiRole==='militia' ? (SYS[G.sys]?.systemPolice||'f01') :
+                  (e.homeStation?.factionId || 'f04');
+  }
+  if(aiRole==='cargo'){
+    e.routeA = stationA || pickStation();
+    e.routeB = stationB || pickStation();
+    e.patT = e.routeB.pos;
+    e.hostile = false;
+    e.factionId = 'f05'; // Merchant Guild
+  }
+  if(aiRole==='merc'){
+    // Two-waypoint patrol between stations (matches 2D spawnMerc)
+    const sts = G.stations.slice();
+    const stA = sts[Math.floor(Math.random()*sts.length)];
+    let stB = sts[Math.floor(Math.random()*sts.length)];
+    if(stB===stA && sts.length>1) stB = sts[(sts.indexOf(stA)+1)%sts.length];
+    e._mercWpA = stA.pos;
+    e._mercWpB = stB.pos;
+    e._mercTarget = stB.pos;
+    e._mercEscort = Math.random() < 0.5;
+    e._mercEscortNpc = null;
+    e.homeStation = stA;
+    e.factionId = 'f09';
+    e.aiSt = 'patrol';
+  }
+  if(aiRole==='recovery'){
+    e.hostile = false;
+    e.homeBase = pirateBase || G.pBases[0];
+    e.col = '#ff9944';
+    e.factionId = e.homeBase?.factionId || 'f07';
+  }
+
+  G.enemies.push(e);
+  return e;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  BULLETS — two-pool damage model
+// ═══════════════════════════════════════════════════════════
+let dmgAlpha=0;
+function damageNPC(e, dmg){
+  // Armour absorbs first; 45% bleed to struct
+  if(e.armour > 0){
+    const absorbed = Math.min(e.armour, dmg);
+    e.armour -= absorbed;
+    const excess = dmg - absorbed;
+    if(excess > 0) e.struct -= excess * 0.45;
+  } else {
+    e.struct -= dmg;
+  }
+  e.hp = e.armour + e.struct;
+}
+function updBullets(arr,dt,isP){
+  for(let i=arr.length-1;i>=0;i--){
+    const b=arr[i];
+    b.pos=v3add(b.pos,v3scale(b.vel,dt));
+    b.life-=dt;
+    if(b.life<=0){arr.splice(i,1);continue;}
+    if(isP){
+      for(let j=G.enemies.length-1;j>=0;j--){
+        const e=G.enemies[j];
+        if(e.struct<=0 || e._dead) continue; // skip dead
+        if(v3len(v3sub(b.pos,e.pos))<e.sz*2){
+          const totalDmg = (b.dmgA||0) + (b.dmgS||b.dmg||0);
+
+          // §8 Capital ship component damage
+          if(e.isCapital && e.components){
+            const alive = e.components.filter(c=>c.hp>0);
+            if(alive.length > 0){
+              const comp = alive[Math.floor(Math.random()*alive.length)];
+              comp.hp -= totalDmg;
+              if(comp.hp <= 0){
+                comp.hp = 0;
+                // Component destroyed — partial reward + explosion
+                G.p.credits += Math.round(e.reward / e.components.length);
+                flash(`${e.name}: ${comp.name} DESTROYED`);
+                addShockwave(b.pos, 200, 0.3, e.col);
+                for(let k=0;k<15;k++){
+                  const a2=Math.random()*PI2,el2=(Math.random()-.5)*PI,sp2=40+Math.random()*120;
+                  G.parts.push({pos:{...b.pos},vel:v3(Math.cos(a2)*sp2,Math.sin(el2)*sp2,Math.sin(a2)*sp2),
+                    life:.3+Math.random()*.8,col:Math.random()<.3?'#fff':'#ffaa00',sz:1+Math.random()*2});
+                }
+                if(comp.isCore){
+                  e.struct = 0; // core destroyed = whole ship dead
+                }
+              }
+              // Update struct to reflect total remaining component HP (unless core killed it)
+              if(e.struct > 0){
+                e.struct = e.components.reduce((s,c)=>s+Math.max(0,c.hp),0);
+              }
+              e.maxStruct = e.components.reduce((s,c)=>s+c.maxHp,0);
+            }
+          } else {
+            damageNPC(e, totalDmg);
+          }
+
+          arr.splice(i,1);
+          // Hit sparks
+          for(let k=0;k<6;k++){
+            const a=Math.random()*PI2,el=(Math.random()-.5)*PI;
+            G.parts.push({pos:{...b.pos},vel:v3(Math.cos(a)*90,Math.sin(el)*90,Math.sin(a)*90),
+              life:.15+Math.random()*.3,col:b.col,sz:1+Math.random()*2});
+          }
+          // Impact knockback
+          if(b.impact && b.impact > 0){
+            const pushDir = v3norm(v3sub(e.pos, b.pos));
+            e.vel = v3add(e.vel||v3(0,0,0), v3scale(pushDir, b.impact * 0.1));
+          }
+          // HV flash trail
+          if(b.isHV){
+            const bDir = v3norm(b.vel);
+            const trailStart = v3sub(b.pos, v3scale(bDir, 200));
+            G.hvFlashes.push({start:trailStart, end:{...b.pos}, life:0.08, ml:0.08, col:b.col});
+          }
+          if(e.struct<=0){ eDeath(e); G.enemies.splice(j,1); }
+          else {
+            e._attacker = {...p.pos}; // position snapshot of player
+            if(e.aiRole==='pirate') { e.hostile=true; e.aiSt='chase'; }
+            if(e.aiRole==='merc') {
+              e.hostile=true; e._combatTarget='player';
+              if(e._mercEscortNpc){
+                G.enemies.forEach(m2=>{
+                  if(m2.aiRole==='merc' && m2!==e && m2._mercEscortNpc===e._mercEscortNpc){
+                    m2.hostile=true; m2._combatTarget='player';
+                  }
+                });
+              }
+            }
+            if(e.aiRole==='militia'||e.aiRole==='corporate') {
+              e.hostile=true; e._chaseTarget=p.pos; e.aiSt='chase';
+            }
+            if(e.aiRole==='cargo') {
+              e.aiSt='flee'; e._attacker={...G.p.pos};
+              broadcastDistress(e, AI_CFG.cargo.distressRange);
+              G.enemies.forEach(m2=>{
+                if(m2.aiRole==='merc' && m2._mercEscortNpc===e){
+                  m2.hostile=true; m2._combatTarget='player';
+                }
+              });
+            }
+          }
+          // §3 Outlaw: hitting friendly NPCs
+          if(!e.hostile && e.aiRole!=='pirate' && e.aiRole!=='recovery'){
+            G.p.friendlyHits++;
+            if(G.p.friendlyHits>=OUTLAW_THRESHOLD && !G.p.outlaw){
+              G.p.outlaw=true; G.p.outlawTimer=OUTLAW_TIME;
+              flash('⚠ OUTLAW STATUS — MILITIA HOSTILE');
+            }
+          }
+          break;
+        }
+      }
+    } else {
+      if(v3len(v3sub(b.pos,G.p.pos))<15){
+        const p=G.p;
+        if(p.armour>0){
+          const absorbed=Math.min(p.armour,b.dmg);
+          p.armour-=absorbed;
+          const excess=b.dmg-absorbed;
+          if(excess>0) p.struct-=excess*0.45;
+        } else {
+          p.struct=Math.max(0,p.struct-b.dmg);
+        }
+        arr.splice(i,1); dmgAlpha=.3;
+      }
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CARGO BOX SYSTEM
+// ═══════════════════════════════════════════════════════════
+function spawnCargoBox(pos, vel){
+  const goods = GOODS;
+  const good = goods[Math.floor(Math.random()*goods.length)];
+  const units = 1 + Math.floor(Math.random()*5);
+  const a=Math.random()*PI2, el=(Math.random()-.5)*1;
+  const sp=20+Math.random()*40;
+  G.cargoBoxes.push({
+    pos: {...pos},
+    vel: v3add(vel||v3(0,0,0), v3(Math.cos(a)*sp, el*sp, Math.sin(a)*sp)),
+    good, units,
+    life: 300+Math.random()*180,  // 300-480s — long enough for recovery ships
+    angle: Math.random()*PI2,
+    spin: (Math.random()-.5)*2,
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  DISTRESS PING
+// ═══════════════════════════════════════════════════════════
+function broadcastDistress(e, range){
+  if(e.distressT > 0) return;
+  e.distressT = 5; // cooldown
+  const r = range || 1600;
+  G.distressPings.push({
+    pos:{...e.pos}, r:10, life:r/800, ml:r/800, col:'#ffff44',
+    speed: 800, maxR: r,
+    sourceId: e, // reference to the ship in distress
+    sourceRole: e.aiRole,
+  });
+}
+
+// Police-specific distress — blue ping, longer range, 10s cooldown
+function broadcastPoliceDistress(e){
+  if(e._distressCd > 0) return;
+  e._distressCd = AI_CFG.militia.distressCd;
+  G.distressPings.push({
+    pos:{...e.pos}, r:10, life:3, ml:3, col:'#4488ff',
+    speed: 800, maxR: 3000,
+    sourceId: e,
+    sourceRole: 'militia_distress',
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ENEMY DEATH — cargo drops, rewards, explosions
+// ═══════════════════════════════════════════════════════════
+function eDeath(e, playerKill){
+  if(e._dead) return; // prevent re-entry
+  e._dead = true;
+  // Emit faction event
+  if(e.factionId) simEvent('SHIP_DESTROYED',{factionId:e.factionId, hullKey:e.hullKey});
+  // Shockwave ring — double for capitals
+  if(e.isCapital){
+    addShockwave(e.pos, 600, 0.25, '#ffffff');
+    addShockwave(e.pos, 450, 0.35, '#ffcc00');
+    addShockwave(e.pos, 250, 0.6, '#ff6600');
+  } else {
+    addShockwave(e.pos, 420, 0.22, '#ffffff');
+    addShockwave(e.pos, 180, 0.5, '#ff8800');
+  }
+  // Explosion particles — capped for performance
+  const scale = e.sz / 14;
+  const nExpl = Math.min(25, Math.round(20*scale));
+  for(let i=0;i<nExpl;i++){
+    const a=Math.random()*PI2,el=(Math.random()-.5)*PI,sp=40+Math.random()*200*scale;
+    G.parts.push({pos:{...e.pos},
+      vel:v3add(e.vel||v3(0,0,0), v3(Math.cos(a)*Math.cos(el)*sp,Math.sin(el)*sp,Math.sin(a)*Math.cos(el)*sp)),
+      life:.2+Math.random()*.8,col:Math.random()<.3?'#fff':Math.random()<.5?'#ffaa00':e.col,
+      sz:1+Math.random()*3*scale});
+  }
+  // Cargo drops — only freighters and pirate recovery ships
+  if(e.aiRole==='cargo' || e.hullKey==='freighter_npc'){
+    const nDrop = 2 + Math.floor(Math.random()*4); // 2-5 boxes
+    for(let i=0;i<nDrop;i++) spawnCargoBox(e.pos, e.vel);
+  } else if(e.aiRole==='recovery'){
+    // Recovery ships drop whatever they've collected
+    const nDrop = Math.max(1, (e._cargo||[]).length);
+    for(let i=0;i<nDrop;i++) spawnCargoBox(e.pos, e.vel);
+  }
+
+  // Credit reward — only for player kills
+  if(e.reward && playerKill!==false) G.p.credits += e.reward;
+  if(playerKill!==false) flash(`${e.name} DESTROYED` + (e.reward ? ` +${e.reward} CR` : ''));
+
+  // Mission bounty tracking — only player kills
+  if(playerKill!==false) checkBountyKill(e);
+
+  // Pirate respawn via pending queue
+  if(e.aiRole==='pirate' && e.homeBase){
+    G.pendingSpawns.push({
+      timer: AI_CFG.pirateRespawnMs / 1000,
+      role:'pirate', base:e.homeBase, sys:G.sys,
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  AI — 5 DISPATCHED ROLES (§7)
+// ═══════════════════════════════════════════════════════════
+
+const NPC_DRAG = 0.984;        // per-frame drag when thrusting (same as 2D)
+const NPC_DRIFT_DRAG = 0.999;  // passive drag always applied
+
+function steerTo(e, target, dt){
+  const dir = v3norm(v3sub(target, e.pos));
+  const targetYaw = Math.atan2(dir.x, dir.z);
+  const targetPitch = Math.asin(Math.max(-1, Math.min(1, dir.y)));
+
+  // Yaw — hard capped at turnRate * dt (matching 2D: Math.sign(ad)*Math.min(abs(ad), turn*dt))
+  let yd = targetYaw - e.yaw;
+  while(yd > PI) yd -= PI2;
+  while(yd < -PI) yd += PI2;
+  const maxYawStep = e.turnRate * dt;
+  e.yaw += Math.sign(yd) * Math.min(Math.abs(yd), maxYawStep);
+
+  // Pitch — same cap
+  let pd = targetPitch - e.pitch;
+  const maxPitchStep = e.turnRate * dt;
+  e.pitch += Math.sign(pd) * Math.min(Math.abs(pd), maxPitchStep);
+}
+
+function npcForward(e){
+  return v3(Math.sin(e.yaw)*Math.cos(e.pitch), Math.sin(e.pitch), Math.cos(e.yaw)*Math.cos(e.pitch));
+}
+
+// thrust(): matches 2D — accelerate along facing at e.baseSpd rate, apply drag, cap at maxSpd
+// doThrust: true = engines on, false = coasting
+function moveNPC(e, dt, doThrust){
+  const ef = npcForward(e);
+
+  if(doThrust){
+    // Acceleration: add baseSpd * dt along facing direction (same as 2D: vx += cos*spd*dt)
+    e.vel = v3add(e.vel, v3scale(ef, e.baseSpd * dt));
+
+    // Thrust drag (2D: vx *= pow(0.984, dt*60))
+    const thrustDrag = Math.pow(NPC_DRAG, dt * 60);
+    e.vel = v3scale(e.vel, thrustDrag);
+
+    // Thrust exhaust particles — rate & size scaled by engine tier and speed fraction
+    const spdFrac = Math.min(1, v3len(e.vel) / (e.maxSpd || 200));
+    const tierScale = (e.engineTier || 1) / 3; // T1=0.33, T3=1, T5=1.67
+    const baseRate = e.isCapital ? 0.6 : (e.aiRole==='cargo' || e.hullKey==='freighter_npc') ? 0.15 : 0.25;
+    const rate = baseRate * (0.3 + spdFrac * 0.7) * (0.5 + tierScale * 0.5);
+
+    if(Math.random() < rate){
+      // Hard particle budget — skip if too many
+      if(G.parts.length > 800) return;
+      const exhaust = v3scale(ef, -(e.sz || 8) * 0.7);
+      const col = (e.engineTier||1) >= 4 ? '#44ccff' :
+                  (e.engineTier||1) >= 3 ? '#88aaff' :
+                  e.aiRole==='militia' || e.aiRole==='corporate' ? '#4499ff' :
+                  e.aiRole==='pirate' ? '#ff6600' : '#ffaa44';
+      const pSize = (0.8 + tierScale * 1.5) * (0.5 + spdFrac);
+      const nParts = e.isCapital ? 2 : 1;
+      for(let pp=0; pp<nParts; pp++){
+        G.parts.push({
+          pos: v3add(e.pos, v3add(exhaust, v3((Math.random()-.5)*3,(Math.random()-.5)*3,(Math.random()-.5)*3))),
+          vel: v3add(v3scale(ef, -15 - Math.random()*20 * tierScale), v3scale(e.vel, 0.7)),
+          life: 0.6 + Math.random() * 0.8 * (1 + tierScale*0.3),
+          col, sz: pSize + Math.random() * pSize,
+        });
+      }
+    }
+  }
+
+  // Passive drift drag — always applied (2D: vx *= pow(0.999, dt*60))
+  const driftDrag = Math.pow(NPC_DRIFT_DRAG, dt * 60);
+  e.vel = v3scale(e.vel, driftDrag);
+
+  // Hard speed cap at maxSpd
+  const spd = v3len(e.vel);
+  if(spd > e.maxSpd) e.vel = v3scale(v3norm(e.vel), e.maxSpd);
+
+  // Track scalar speed for HUD/AI
+  e.speed = v3len(e.vel);
+
+  // Move
+  e.pos = v3add(e.pos, v3scale(e.vel, dt));
+}
+
+function npcFireAt(e, target, dt){
+  if(!e.wpn) return;
+  e.fireCd = Math.max(0, e.fireCd - dt);
+  const dist = v3len(v3sub(target, e.pos));
+  if(dist > (e.wpn.range||600) || e.fireCd > 0) return;
+  const ef = npcForward(e);
+  const toTarget = v3norm(v3sub(target, e.pos));
+  if(v3dot(ef, toTarget) < .82) return;
+  e.fireCd = e.wpn.cd;
+  const bDir = v3norm(v3add(v3scale(ef,.7), v3scale(toTarget,.3)));
+  G.eBullets.push({
+    pos:v3add(e.pos,v3scale(ef,e.sz)),
+    vel:v3scale(bDir, e.wpn.speed),
+    life:1.2, dmg:e.wpn.dmg, col:e.wpn.col, sz:e.wpn.sz,
+  });
+}
+
+// NPC-vs-NPC proximity combat — when an NPC is fighting another NPC, apply direct DPS
+function npcCombatNPC(attacker, target, dt){
+  if(!attacker.wpn || !target || target.struct<=0 || target._dead) return;
+  // Prevent friendly fire — lawful NPCs never attack each other
+  const lawfulRoles = ['militia','corporate','merc','cargo','recovery'];
+  if(lawfulRoles.includes(attacker.aiRole) && lawfulRoles.includes(target.aiRole)) return;
+  const dist = v3len(v3sub(target.pos, attacker.pos));
+  if(dist > (attacker.wpn.range||600)) return;
+  const ef = npcForward(attacker);
+  const toT = v3norm(v3sub(target.pos, attacker.pos));
+  if(v3dot(ef, toT) < .7) return;
+  const dps = (attacker.wpn.dmg||5) * 0.7;
+  damageNPC(target, dps * dt);
+  // Track attacker on victim as a POSITION snapshot (not entity ref)
+  target._attacker = {...attacker.pos};
+  if(target.struct <= 0){ eDeath(target, false); return; }
+  // Trigger cargo flee + distress when attacked by NPCs
+  if(target.aiRole==='cargo' && target.aiSt!=='flee'){
+    target.aiSt='flee';
+    broadcastDistress(target, AI_CFG.cargo.distressRange);
+    // Alert escorting mercs
+    G.enemies.forEach(m=>{
+      if(m.aiRole==='merc' && m._mercEscortNpc===target){
+        m._combatTarget=attacker;
+      }
+    });
+  }
+  // Re-ping distress if cargo already fleeing (cooldown handles rate)
+  if(target.aiRole==='cargo' && target.aiSt==='flee'){
+    broadcastDistress(target, AI_CFG.cargo.distressRange);
+  }
+  // Trigger militia/corporate react when attacked by NPCs
+  if((target.aiRole==='militia'||target.aiRole==='corporate') && target.aiSt!=='chase'){
+    target._chaseTarget = attacker;
+    target.aiSt = 'chase';
+  }
+  // Mercs react to being attacked by NPCs
+  if(target.aiRole==='merc' && !target._combatTarget){
+    target._combatTarget = attacker;
+  }
+}
+
+// Count pirates sharing the same home base as this pirate (2D: siblingPirates)
+function pirateSiblings(e){
+  if(!e.homeBase) return 1;
+  return G.enemies.filter(p=>
+    p.aiRole==='pirate' && p!==e && p.homeBase &&
+    v3len(v3sub(p.homeBase.pos, e.homeBase.pos)) < 50
+  ).length + 1;
+}
+
+function updEnemies(dt){
+  const p=G.p;
+
+  G.enemies.forEach(e=>{
+    if(e._dead || e.struct <= 0) return; // skip dead
+    const toP = v3sub(p.pos, e.pos);
+    const dP = v3len(toP);
+    e.fireCd = Math.max(0, e.fireCd - dt);
+    e.aiT -= dt;
+    if(e.distressT > 0) e.distressT -= dt;
+
+    // ── DISPATCH BY ROLE ──
+    switch(e.aiRole){
+
+    // ─── MILITIA AI ───
+    case 'militia': {
+      const cfg = AI_CFG.militia;
+      const hpFrac = (e.armour+e.struct)/(e.maxArmour+e.maxStruct);
+
+      // Tick distress cooldown
+      if(e._distressCd > 0) e._distressCd -= dt;
+
+      // ── FLEE + RETURN TO BASE when badly damaged ──
+      if(e._fleeing){
+        e._fleeTimer -= dt;
+        if(e._fleeTimer <= 0){
+          e._fleeing = false;
+          if(e._fledDamaged && e.homeStation){
+            e._returning = true;
+          }
+        } else {
+          steerTo(e, v3add(e.pos, v3scale(e._fleeDir, 500)), dt);
+          moveNPC(e, dt, true);
+          // Broadcast police distress every 10s while fleeing
+          broadcastPoliceDistress(e);
+          break;
+        }
+      }
+
+      if(hpFrac < cfg.fleeHpRatio && !e._fleeing && !e._returning){
+        e._fleeing = true; e._fleeTimer = cfg.fleeDur; e._fledDamaged = true;
+        // Get threat position — handle both entity refs and position objects
+        let threatPos = p.pos;
+        if(e._chaseTarget){
+          if(e._chaseTarget.pos) threatPos = e._chaseTarget.pos; // entity
+          else if(e._chaseTarget.x !== undefined) threatPos = e._chaseTarget; // position
+        }
+        e._fleeDir = v3norm(v3sub(e.pos, threatPos));
+        broadcastPoliceDistress(e);
+        break;
+      }
+
+      // ── RETURNING TO BASE — fly home, send periodic distress for escort ──
+      if(e._returning && e.homeStation){
+        const homeDist = v3len(v3sub(e.homeStation.pos, e.pos));
+        if(homeDist < 120){
+          e._returning = false; e._fleeing = false;
+          e.armour = e.maxArmour; e.struct = e.maxStruct; // healed at base
+          e.aiSt = 'patrol';
+        } else {
+          steerTo(e, e.homeStation.pos, dt);
+          moveNPC(e, dt, true);
+          // Ping for escort every 10s
+          broadcastPoliceDistress(e);
+        }
+        break;
+      }
+
+      // ── COMBAT / ESCORT ──
+      if(e.aiSt === 'chase'){
+        let tgt = e._chaseTarget;
+        if(tgt && typeof tgt === 'object' && tgt.pos){
+          // Chasing an NPC entity — check if it's friendly (escort) or hostile (combat)
+          const isFriendly = tgt.aiRole==='militia'||tgt.aiRole==='corporate'||tgt.aiRole==='cargo';
+          if(isFriendly){
+            // ESCORT — fly toward the friendly, don't attack
+            steerTo(e, tgt.pos, dt);
+            moveNPC(e, dt, v3len(v3sub(tgt.pos,e.pos)) > 150);
+            // Disengage once close enough or target healed/safe
+            if(v3len(v3sub(tgt.pos, e.pos)) < 200 || tgt._dead || tgt.struct <= 0 ||
+               (!tgt._returning && !tgt._fleeing)){
+              e.aiSt='patrol'; e._chaseTarget=null;
+            }
+          } else {
+            // COMBAT — attack hostile NPC (pirate etc)
+            steerTo(e, tgt.pos, dt);
+            moveNPC(e, dt, true);
+            npcCombatNPC(e, tgt, dt);
+            npcFireAt(e, tgt.pos, dt);
+            if(tgt.struct <= 0 || tgt._dead || v3len(v3sub(tgt.pos, e.pos)) > cfg.chaseLeash){
+              e.aiSt='patrol'; e._chaseTarget=null; e.hostile=false;
+            }
+          }
+        } else if(tgt){
+          // Chasing a position (player)
+          steerTo(e, tgt, dt);
+          moveNPC(e, dt, true);
+          npcFireAt(e, tgt, dt);
+          const dTgt = v3len(v3sub(tgt, e.pos));
+          if(dTgt > cfg.chaseLeash) { e.aiSt='patrol'; e._chaseTarget=null; }
+        } else {
+          e.aiSt = 'patrol';
+        }
+      } else {
+        // ── PATROL ──
+        if(!e.patT || e.aiT<=0){
+          e.aiT = 3+Math.random()*4;
+          const a=Math.random()*PI2;
+          const home = e.homeStation ? e.homeStation.pos : e.pos;
+          e.patT = v3add(home, v3(Math.cos(a)*cfg.patrolR,(Math.random()-.5)*60,Math.sin(a)*cfg.patrolR));
+        }
+        steerTo(e, e.patT, dt);
+        moveNPC(e, dt, true);
+
+        // Respond to distress pings — both cargo (yellow) and police (blue)
+        G.distressPings.forEach(dp=>{
+          if(v3len(v3sub(dp.pos,e.pos)) < cfg.pingLeash && dp.sourceId){
+            if(dp.sourceRole==='militia_distress'){
+              // Escort damaged police — fly toward them
+              if(dp.sourceId !== e){
+                e._chaseTarget = dp.sourceId; e.aiSt='chase'; e.hostile=false;
+              }
+            } else {
+              // Respond to cargo distress — find nearest pirate
+              let nearPirate=null, bestD=Infinity;
+              G.enemies.forEach(p2=>{
+                if(p2.aiRole==='pirate' && p2!==e){
+                  const d2=v3len(v3sub(p2.pos,dp.pos));
+                  if(d2<bestD){bestD=d2;nearPirate=p2;}
+                }
+              });
+              if(nearPirate){ e._chaseTarget=nearPirate; e.aiSt='chase'; e.hostile=false; }
+            }
+          }
+        });
+
+        // Chase player if outlaw
+        if(p.outlaw && dP < cfg.chaseLeash){
+          e._chaseTarget = p.pos; e.aiSt = 'chase'; e.hostile = true;
+        }
+      }
+      break;
+    }
+
+    // ─── CORPORATE AI ───
+    case 'corporate': {
+      const cfg = AI_CFG.corporate;
+      if(e.aiSt === 'chase'){
+        steerTo(e, p.pos, dt);
+        moveNPC(e, dt, true);
+        npcFireAt(e, p.pos, dt);
+        if(dP > cfg.chaseLeash) { e.aiSt='patrol'; e.hostile=false; }
+      } else {
+        if(!e.patT || e.aiT<=0){
+          e.aiT = 3+Math.random()*5;
+          const a=Math.random()*PI2;
+          const home = e.homeStation ? e.homeStation.pos : e.pos;
+          e.patT = v3add(home, v3(Math.cos(a)*cfg.patrolR,(Math.random()-.5)*60,Math.sin(a)*cfg.patrolR));
+        }
+        steerTo(e, e.patT, dt);
+        moveNPC(e, dt, true);
+        // Rep-gated hostility: attack if player rep < -40 with this faction
+        const corpRep = e.factionId ? (FACTIONS[e.factionId]?.playerRep||0) : 0;
+        if((corpRep < -40 || p.outlaw) && dP < cfg.chaseLeash){
+          e.hostile=true; e.aiSt='chase';
+        }
+      }
+      break;
+    }
+
+    // ─── MERC AI — escort/patrol with reactive combat, flee/return ───
+    case 'merc': {
+      const cfg = AI_CFG.merc;
+      const hpFrac = (e.armour+e.struct)/(e.maxArmour+e.maxStruct);
+      const mercRep = FACTIONS['f09']?.playerRep ?? 0;
+      const isEscorting = e._mercEscort && e._mercEscortNpc &&
+        G.enemies.includes(e._mercEscortNpc) && e._mercEscortNpc.struct>0;
+
+      // ── FLEE when badly damaged (non-escort) ──
+      if(e._fleeing){
+        e._fleeTimer -= dt;
+        if(e._fleeTimer <= 0){
+          e._fleeing = false;
+          if(e._fledDamaged){ e._returning = true; }
+        } else {
+          steerTo(e, v3add(e.pos, v3scale(e._fleeDir, 500)), dt);
+          moveNPC(e, dt, true);
+          break;
+        }
+      }
+
+      // Non-escort: flee at low HP
+      if(!isEscorting && hpFrac < cfg.fleeHpRatio && !e._fleeing && !e._returning){
+        e._fleeing = true; e._fleeTimer = cfg.fleeDur; e._fledDamaged = true;
+        const threat = (e._combatTarget==='player') ? p.pos :
+          (e._combatTarget?.pos || p.pos);
+        e._fleeDir = v3norm(v3sub(e.pos, threat));
+        break;
+      }
+
+      // ── RETURNING TO NEAREST STATION ──
+      if(e._returning){
+        let nearSt = null, bestSD = Infinity;
+        G.stations.forEach(s=>{
+          const d=v3len(v3sub(s.pos,e.pos));
+          if(d<bestSD){bestSD=d;nearSt=s;}
+        });
+        if(nearSt && bestSD > 120){
+          steerTo(e, nearSt.pos, dt);
+          moveNPC(e, dt, true);
+        } else {
+          // Arrived — heal and resume patrol
+          e._returning = false; e._fleeing = false;
+          e.armour = e.maxArmour; e.struct = e.maxStruct;
+          e.hostile = false; e._combatTarget = null;
+        }
+        break;
+      }
+
+      // ── FIND COMBAT TARGET ──
+      // Priority 1: whoever attacked us or our escort
+      let combatNPC = null, combatDist = Infinity, combatIsPlayer = false;
+
+      // Check if we've been attacked
+      if(e._combatTarget === 'player'){
+        combatIsPlayer = true; combatDist = dP;
+      } else if(e._combatTarget && typeof e._combatTarget === 'object' &&
+                G.enemies.includes(e._combatTarget) && e._combatTarget.struct > 0){
+        combatNPC = e._combatTarget;
+        combatDist = v3len(v3sub(combatNPC.pos, e.pos));
+      }
+
+      // Priority 2: scan for nearby pirates
+      if(!combatNPC && !combatIsPlayer){
+        G.enemies.forEach(pi=>{
+          if(pi.aiRole==='pirate'){
+            const d=v3len(v3sub(pi.pos,e.pos));
+            if(d<cfg.chaseLeash && d<combatDist){ combatDist=d; combatNPC=pi; }
+          }
+        });
+      }
+
+      // Priority 3: hostile player
+      if(!combatNPC && !combatIsPlayer && mercRep < -40 && dP < cfg.chaseLeash){
+        combatIsPlayer = true; combatDist = dP;
+      }
+
+      const hasCombat = combatNPC || combatIsPlayer;
+
+      // ── ESCORT LEASH CHECK ──
+      // If escorting and in combat, don't chase beyond escort leash
+      if(hasCombat && isEscorting){
+        const escortDist = v3len(v3sub(e.pos, e._mercEscortNpc.pos));
+        if(combatDist > cfg.escortLeash || escortDist > cfg.escortLeash){
+          // Too far from escort — disengage, return to escort
+          e._combatTarget = null;
+          steerTo(e, e._mercEscortNpc.pos, dt);
+          moveNPC(e, dt, true);
+          e.hostile = false;
+          break;
+        }
+      }
+
+      if(hasCombat){
+        // ── COMBAT ──
+        if(combatIsPlayer){
+          steerTo(e, p.pos, dt);
+          moveNPC(e, dt, true);
+          npcFireAt(e, p.pos, dt);
+          e.hostile = true;
+        } else if(combatNPC){
+          steerTo(e, combatNPC.pos, dt);
+          moveNPC(e, dt, true);
+          npcCombatNPC(e, combatNPC, dt);
+          npcFireAt(e, combatNPC.pos, dt);
+          e.hostile = false;
+          // Clear target if dead or too far
+          if(combatNPC.struct <= 0 || combatDist > cfg.chaseLeash){
+            e._combatTarget = null;
+          }
+        }
+
+        // Escort mode: flee at lower HP threshold when protecting
+        if(isEscorting && hpFrac < cfg.fleeHpRatio * 1.5){
+          e._fleeing = true; e._fleeTimer = cfg.fleeDur * 0.5; e._fledDamaged = true;
+          e._fleeDir = v3norm(v3sub(e.pos, combatNPC ? combatNPC.pos : p.pos));
+        }
+      } else {
+        // ── NO COMBAT — PATROL / ESCORT ──
+        e.hostile = false;
+        e._combatTarget = null;
+
+        if(isEscorting){
+          // ── ESCORT MODE: follow freighter ──
+          // No-distress timer: if freighter hasn't pinged distress recently, detach
+          e._noDistressTimer = (e._noDistressTimer||0) + dt;
+          // Reset timer if escort is fleeing (means it's been attacked recently)
+          if(e._mercEscortNpc.aiSt === 'flee') e._noDistressTimer = 0;
+          // Check nearby distress pings from our escort
+          G.distressPings.forEach(dp=>{
+            if(dp.sourceId === e._mercEscortNpc) e._noDistressTimer = 0;
+          });
+
+          if(e._noDistressTimer > cfg.noDistressTimer){
+            // Freighter is safe — drop escort, resume patrol
+            e._mercEscort = false;
+            e._mercEscortNpc = null;
+            e._noDistressTimer = 0;
+          } else {
+            // Shadow the freighter
+            const off = v3add(e._mercEscortNpc.pos, v3(80,30,0));
+            steerTo(e, off, dt);
+            const escDist = v3len(v3sub(off, e.pos));
+            moveNPC(e, dt, escDist > 80);
+          }
+        } else if(e._mercWpA && e._mercWpB){
+          // ── WAYPOINT PATROL ──
+          // Scan for freighters to escort
+          if(Math.random() < 0.01){ // check occasionally, not every frame
+            let bestCargo=null, bestD=Infinity;
+            G.enemies.forEach(c=>{
+              if(c.aiRole==='cargo'){
+                const d=v3len(v3sub(c.pos,e.pos));
+                if(d<2000 && d<bestD){bestD=d; bestCargo=c;}
+              }
+            });
+            if(bestCargo){
+              e._mercEscort = true;
+              e._mercEscortNpc = bestCargo;
+              e._noDistressTimer = 0;
+            }
+          }
+
+          steerTo(e, e._mercTarget, dt);
+          const distToWp = v3len(v3sub(e._mercTarget, e.pos));
+          moveNPC(e, dt, distToWp > 120);
+
+          if(distToWp < 180){
+            const atA = v3len(v3sub(e._mercTarget, e._mercWpA)) < 10;
+            e._mercTarget = atA ? e._mercWpB : e._mercWpA;
+          }
+        } else {
+          // Fallback patrol
+          if(!e.patT || e.aiT<=0){
+            e.aiT=4+Math.random()*6;
+            e.patT = pickStation().pos;
+          }
+          steerTo(e, e.patT, dt);
+          moveNPC(e, dt, true);
+        }
+      }
+      break;
+    }
+
+    // ─── PIRATE AI (matches 2D aiPirate) ───
+    case 'pirate': {
+      const cfg = AI_CFG.pirate;
+      const hpFrac = (e.armour+e.struct)/(e.maxArmour+e.maxStruct);
+      const nearLawful = G.enemies.filter(m=>
+        (m.aiRole==='militia'||m.aiRole==='corporate'||m.aiRole==='merc') &&
+        v3len(v3sub(m.pos,e.pos)) < 900
+      );
+      const nearThreat = nearLawful.length > 0 ||
+        (p.outlaw && dP < cfg.safeR);
+
+      // ── FLEE: sprint away when low HP or outnumbered by militia ──
+      const fleeingHP = hpFrac < cfg.fleeHpRatio;
+      const militiaFleeing = nearLawful.length >= 2;
+      const shouldFlee = (militiaFleeing || (fleeingHP && nearLawful.length>0)) && !e._fleeing;
+
+      if(shouldFlee && !e._fleeing){
+        e._fleeing = true;
+        e._fleeTimer = cfg.fleeDur;
+        e._fledDamaged = fleeingHP;
+        // Flee away from nearest threat
+        const runFrom = nearLawful[0] || p;
+        e._fleeDir = v3norm(v3sub(e.pos, runFrom.pos));
+      }
+
+      if(e._fleeing){
+        e._fleeTimer -= dt;
+        if(e._fleeTimer <= 0){
+          e._fleeing = false;
+          // If fled because damaged, return home
+          if(e._fledDamaged && e.homeBase){
+            e._returning = true;
+          }
+        } else {
+          const fleeTarget = v3add(e.pos, v3scale(e._fleeDir, 500));
+          steerTo(e, fleeTarget, dt);
+          moveNPC(e, dt, true);
+          break;
+        }
+      }
+
+      // ── RETURN HOME: fly to base, despawn, respawn fresh ──
+      if(fleeingHP && !e._returning && !nearThreat && e.homeBase){
+        e._returning = true;
+      }
+      if(e._returning && e.homeBase){
+        if(nearThreat){ e._returning = false; }
+        else {
+          const homeDist = v3len(v3sub(e.homeBase.pos, e.pos));
+          if(homeDist < 60){
+            // Despawn and queue respawn
+            e.struct = 0; // will be filtered out
+            G.pendingSpawns.push({
+              timer: AI_CFG.pirateRespawnMs / 1000,
+              role:'pirate', base:e.homeBase, sys:G.sys,
+            });
+          } else {
+            steerTo(e, e.homeBase.pos, dt);
+            moveNPC(e, dt, true);
+          }
+          break;
+        }
+      }
+
+      // ── DEFEND vs HUNT decision based on siblings at THIS base ──
+      const siblings = pirateSiblings(e);
+      const defending = siblings < cfg.huntThresh;
+
+      if(defending){
+        // Defend home base — orbit and attack intruders
+        if(!e.patT || e.aiT<=0){
+          e.aiT = 2+Math.random()*4;
+          const a=Math.random()*PI2;
+          const home = e.homeBase ? e.homeBase.pos : e.pos;
+          e.patT = v3add(home, v3(Math.cos(a)*cfg.baseR,(Math.random()-.5)*80,Math.sin(a)*cfg.baseR));
+        }
+        steerTo(e, e.patT, dt);
+        moveNPC(e, dt, v3len(v3sub(e.patT,e.pos)) > 80);
+
+        // Detect intruders near base
+        if(e.homeBase){
+          // Check for lawful NPCs or player near base
+          const intruder = G.enemies.find(m=>
+            (m.aiRole==='militia'||m.aiRole==='cargo'||m.aiRole==='merc') &&
+            v3len(v3sub(m.pos, e.homeBase.pos)) < cfg.baseLeash
+          );
+          const playerNearBase = v3len(v3sub(p.pos, e.homeBase.pos)) < cfg.baseLeash;
+
+          if(intruder){
+            steerTo(e, intruder.pos, dt);
+            moveNPC(e, dt, true);
+            npcCombatNPC(e, intruder, dt);
+            npcFireAt(e, intruder.pos, dt);
+            break;
+          }
+          if(playerNearBase){
+            steerTo(e, p.pos, dt);
+            moveNPC(e, dt, true);
+            npcFireAt(e, p.pos, dt);
+            break;
+          }
+        }
+        // Also chase if player comes very close
+        if(dP < 800){
+          steerTo(e, p.pos, dt);
+          moveNPC(e, dt, true);
+          npcFireAt(e, p.pos, dt);
+        }
+      } else {
+        // HUNT MODE — aggressively seek cargo ships, fan out from base
+        let huntTarget = null, huntDist = 5000;
+
+        // Find nearest cargo/freighter within wide hunt range
+        G.enemies.forEach(c=>{
+          if(c.aiRole==='cargo'){
+            const d=v3len(v3sub(c.pos,e.pos));
+            if(d<huntDist){ huntDist=d; huntTarget=c; }
+          }
+        });
+
+        // Also target mercs and militia if close and no cargo found
+        if(!huntTarget){
+          G.enemies.forEach(c=>{
+            if(c.aiRole==='merc'||c.aiRole==='militia'){
+              const d=v3len(v3sub(c.pos,e.pos));
+              if(d<2000 && d<huntDist){ huntDist=d; huntTarget=c; }
+            }
+          });
+        }
+
+        if(huntTarget){
+          steerTo(e, huntTarget.pos, dt);
+          const distToTgt = v3len(v3sub(huntTarget.pos, e.pos));
+          moveNPC(e, dt, distToTgt > 120);
+          npcCombatNPC(e, huntTarget, dt);
+          npcFireAt(e, huntTarget.pos, dt);
+        } else if(dP < 3000){
+          // No NPC targets — fall back to player
+          steerTo(e, p.pos, dt);
+          moveNPC(e, dt, dP > 150);
+          npcFireAt(e, p.pos, dt);
+        } else {
+          // No targets — roam far from base seeking prey
+          if(!e.patT || e.aiT<=0){
+            e.aiT = 3+Math.random()*5;
+            const a=Math.random()*PI2;
+            const home = e.homeBase ? e.homeBase.pos : e.pos;
+            e.patT = v3add(home, v3(Math.cos(a)*cfg.baseR*4,(Math.random()-.5)*150,Math.sin(a)*cfg.baseR*4));
+          }
+          steerTo(e, e.patT, dt);
+          moveNPC(e, dt, true);
+          if(v3len(v3sub(e.patT,e.pos))<120) e.patT=null;
+        }
+      }
+      break;
+    }
+
+    // ─── CARGO AI ───
+    case 'cargo': {
+      if(e.aiSt === 'flee'){
+        // Flee away from attacker
+        const awayDir = v3norm(v3sub(e.pos, e._attacker || p.pos));
+        const fleeTarget = v3add(e.pos, v3scale(awayDir, 600));
+        steerTo(e, fleeTarget, dt);
+        moveNPC(e, dt, true);
+        // Re-ping distress every 5s while fleeing (longer range)
+        broadcastDistress(e, AI_CFG.cargo.distressRange);
+        // Check if safe
+        if(!e._attacker || v3len(v3sub(e.pos, e._attacker)) > 1500){
+          e.aiSt = 'patrol'; e._attacker = null;
+        }
+      } else {
+        // Navigate route A → B
+        const tgt = e.patT || (e.routeB ? e.routeB.pos : null);
+        if(tgt){
+          steerTo(e, tgt, dt);
+          moveNPC(e, dt, true);
+          // Reached destination → swap route
+          if(v3len(v3sub(e.pos, tgt)) < AI_CFG.cargo.dockR){
+            const tmp = e.routeA; e.routeA = e.routeB; e.routeB = tmp;
+            e.patT = e.routeB ? e.routeB.pos : null;
+          }
+        } else {
+          moveNPC(e, dt, false);
+        }
+      }
+      break;
+    }
+
+    // ─── RECOVERY SHIP AI ───
+    case 'recovery': {
+      if(e._returning){
+        // Return to home base with cargo
+        if(e.homeBase){
+          steerTo(e, e.homeBase.pos, dt);
+          moveNPC(e, dt, true);
+          if(v3len(v3sub(e.pos, e.homeBase.pos)) < 100){
+            e._cargo = [];
+            e._returning = false;
+          }
+        }
+      } else {
+        // Scan for cargo boxes — wide 4000u range, prioritize nearest
+        let nearBox = null, bestD = Infinity;
+        G.cargoBoxes.forEach(box=>{
+          const d = v3len(v3sub(box.pos, e.pos));
+          if(d < 4000 && d < bestD){ bestD = d; nearBox = box; }
+        });
+        if(nearBox){
+          steerTo(e, nearBox.pos, dt);
+          moveNPC(e, dt, true);
+          // Collect
+          if(bestD < 35){
+            e._cargo.push({good:nearBox.good, units:nearBox.units});
+            G.cargoBoxes.splice(G.cargoBoxes.indexOf(nearBox), 1);
+            if(e._cargo.length >= 5) e._returning = true;
+          }
+        } else {
+          // No boxes in range
+          if(e._cargo.length > 0){
+            // Has some cargo — check if anything within wider range, else go home
+            const anyFar = G.cargoBoxes.some(box=>
+              v3len(v3sub(box.pos, e.pos)) < 6000
+            );
+            if(!anyFar) e._returning = true;
+            else {
+              // Fly toward nearest far box
+              let farBox=null, farD=Infinity;
+              G.cargoBoxes.forEach(box=>{
+                const d=v3len(v3sub(box.pos,e.pos));
+                if(d<6000&&d<farD){farD=d;farBox=box;}
+              });
+              if(farBox){
+                steerTo(e, farBox.pos, dt);
+                moveNPC(e, dt, true);
+              }
+            }
+          } else {
+            // No cargo, no boxes — patrol wider area around base looking for debris
+            if(!e.patT || e.aiT<=0){
+              e.aiT = 3+Math.random()*4;
+              const a=Math.random()*PI2;
+              const home = e.homeBase ? e.homeBase.pos : e.pos;
+              // Wide patrol radius so they roam toward battle sites
+              e.patT = v3add(home, v3(Math.cos(a)*2000,(Math.random()-.5)*100,Math.sin(a)*2000));
+            }
+            steerTo(e, e.patT, dt);
+            moveNPC(e, dt, true);
+            if(v3len(v3sub(e.patT, e.pos)) < 100) e.patT = null;
+          }
+        }
+      }
+      // Fight back if attacked
+      if(e.hostile && dP < 600){
+        npcFireAt(e, p.pos, dt);
+      }
+      break;
+    }
+
+    // ─── CAPITAL SHIP AI (§8) ───
+    case 'capital': {
+      // Patrol near home base, turrets fire independently at player
+      if(!e.patT || e.aiT<=0){
+        e.aiT = 4+Math.random()*6;
+        const a=Math.random()*PI2;
+        const home = e.homeBase ? e.homeBase.pos : e.pos;
+        e.patT = v3add(home, v3(Math.cos(a)*500,(Math.random()-.5)*60,Math.sin(a)*500));
+      }
+      steerTo(e, e.patT, dt);
+      moveNPC(e, dt, v3len(v3sub(e.patT,e.pos)) > 100);
+
+      // Independent turret firing — each component fires at player regardless of ship facing
+      if(e.components && dP < 1200){
+        const toPlayer = v3norm(v3sub(p.pos, e.pos));
+        e.components.forEach((comp,ci)=>{
+          if(comp.hp <= 0) return;
+          comp.fireCd = (comp.fireCd||0) - dt;
+          if(comp.fireCd > 0) return;
+          comp.fireCd = (1.8 / (comp.turrets||1)) + Math.random()*0.6;
+          for(let t=0; t<(comp.turrets||1); t++){
+            // Turret aims directly at player + small scatter (independent of ship heading)
+            const scatter = v3(
+              (Math.random()-.5)*0.08,
+              (Math.random()-.5)*0.08,
+              (Math.random()-.5)*0.08
+            );
+            const bDir = v3norm(v3add(toPlayer, scatter));
+            // Spawn from component offset position on hull
+            const ef = npcForward(e);
+            const right = v3norm(v3(ef.z,0,-ef.x));
+            const compOffset = v3add(e.pos, v3add(
+              v3scale(ef, (ci-1)*e.sz*0.25),
+              v3scale(right, (Math.random()-.5)*e.sz*0.3)
+            ));
+            const wpnCol = t%2===0 ? '#ff6644' : '#dd88ff';
+            const dmg = e.capType==='dreadnought' ? 10 : 7;
+            G.eBullets.push({
+              pos: compOffset,
+              vel: v3scale(bDir, 500+Math.random()*100),
+              life: 1.8, dmg, col:wpnCol, sz:2.5,
+            });
+          }
+        });
+      }
+      break;
+    }
+
+    // ─── DEFAULT (fallback) ───
+    default: {
+      if(!e.patT || e.aiT<=0){
+        e.aiT=3+Math.random()*5;
+        e.patT=v3add(e.pos,v3((Math.random()-.5)*2000,(Math.random()-.5)*300,(Math.random()-.5)*2000));
+      }
+      steerTo(e, e.patT, dt);
+      moveNPC(e, dt, true);
+    }
+    } // end switch
+
+    // Despawn if very far from player (not capitals)
+    if(dP > 8000 && !e.isCapital) e.struct = 0;
+  });
+
+  // Remove dead
+  G.enemies = G.enemies.filter(e => e.struct > 0 && !e._dead);
+
+  // Update distress pings — cap at 20
+  if(G.distressPings.length > 20) G.distressPings.splice(0, G.distressPings.length - 15);
+  G.distressPings = G.distressPings.filter(dp=>{
+    dp.r += (dp.speed||300) * dt;
+    dp.life -= dt;
+    return dp.life > 0 && dp.r < (dp.maxR||2000);
+  });
+
+  // Update cargo boxes
+  G.cargoBoxes.forEach(box=>{
+    box.pos = v3add(box.pos, v3scale(box.vel, dt));
+    box.vel = v3scale(box.vel, 0.998); // slow drift
+    box.angle += box.spin * dt;
+    box.life -= dt;
+  });
+  // Player picks up cargo boxes
+  G.cargoBoxes = G.cargoBoxes.filter(box=>{
+    if(box.life <= 0) return false;
+    if(v3len(v3sub(box.pos, p.pos)) < 25 && p.cargoUsed < p.cargoMax){
+      p.cargo[box.good] = (p.cargo[box.good]||0) + box.units;
+      p.cargoUsed += box.units;
+      flash(`SCOOPED ${box.units} ${GNAMES[box.good]||box.good}`);
+      return false;
+    }
+    return true;
+  });
+
+  // Process pending spawns
+  G.pendingSpawns = G.pendingSpawns.filter(ps=>{
+    ps.timer -= dt;
+    if(ps.timer <= 0){
+      if(ps.sys === G.sys){ // only spawn if still in same system
+        spawnNPC(ps.role, null, null, null, ps.base);
+      }
+      return false;
+    }
+    return true;
+  });
+}

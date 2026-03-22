@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VOIDRUNNER — VECTOR</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; cursor:none; font-family:'Courier New',monospace; }
+canvas { display:block; }
+
+#title-screen { cursor:default; }
+#title-screen button, #title-screen .wpn-card { cursor:pointer; }
+#trade-screen { cursor:default; }
+#trade-screen button { cursor:pointer; }
+#starmap-screen { cursor:default; }
+#starmap-screen button, #starmap-screen canvas { cursor:pointer; }
+#game-over { cursor:default; }
+#game-over button { cursor:pointer; }
+
+#ui {
+  position:fixed; top:0; left:0; width:100%; height:100%;
+  pointer-events:none; color:#00ffcc;
+  font-family:'Courier New',monospace;
+}
+
+#speed-disp {
+  position:absolute; bottom:48px; left:50%;
+  transform:translateX(-50%);
+  font-size:14px; letter-spacing:4px; opacity:0.7;
+}
+#target-info {
+  position:absolute; top:80px; right:30px;
+  font-size:10px; letter-spacing:2px; opacity:0.8;
+  text-align:right; line-height:1.8;
+}
+#sys-name {
+  position:absolute; top:16px; left:50%;
+  transform:translateX(-50%);
+  font-size:11px; letter-spacing:6px; opacity:0.4;
+}
+#flash-msg {
+  position:absolute; top:30%; left:50%;
+  transform:translateX(-50%);
+  font-size:14px; letter-spacing:5px; color:#ffdd44;
+  opacity:0; transition:opacity 0.3s; white-space:nowrap;
+}
+#dock-prompt {
+  position:absolute; bottom:140px; left:50%;
+  transform:translateX(-50%);
+  font-size:13px; letter-spacing:5px; color:#ffdd44;
+  animation:blink 0.9s infinite; display:none;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+#hud-left {
+  position:absolute; bottom:60px; left:30px;
+}
+.stat-row { display:flex; align-items:center; gap:6px; margin-bottom:4px; }
+.stat-label { font-size:9px; letter-spacing:2px; width:60px; opacity:0.6; }
+.stat-bar { width:100px; height:6px; border:1px solid rgba(0,255,204,0.25); background:rgba(0,255,204,0.05); }
+.stat-fill { height:100%; transition:width 0.15s; }
+.s-armour { background:#ff9900; }
+.s-struct { background:#ff3333; }
+.s-fuel { background:#ffaa00; }
+.stat-val { font-size:9px; width:30px; opacity:0.7; }
+
+#hud-right {
+  position:absolute; bottom:60px; right:30px; text-align:right;
+}
+#credits-disp { font-size:16px; letter-spacing:3px; color:#ffdd44; margin-bottom:4px; }
+#cargo-disp { font-size:9px; letter-spacing:2px; opacity:0.5; }
+#wpn-disp { font-size:9px; letter-spacing:2px; opacity:0.6; margin-bottom:4px; }
+
+#vel-info {
+  position:absolute; bottom:60px; left:50%;
+  transform:translateX(-50%);
+  font-size:8px; letter-spacing:2px; opacity:0.35;
+  text-align:center;
+}
+
+/* Trade Screen */
+#trade-screen {
+  display:none; position:fixed; top:50%; left:50%;
+  transform:translate(-50%,-50%);
+  width:640px; max-height:85vh; overflow-y:auto;
+  background:rgba(0,4,12,0.96);
+  border:1px solid #00ffcc;
+  padding:22px 26px;
+  pointer-events:all; cursor:default;
+  box-shadow:0 0 50px rgba(0,255,204,0.12);
+  z-index:100;
+}
+#trade-screen h2 { font-size:15px; letter-spacing:6px; color:#fff; margin-bottom:3px; }
+.trade-sub { font-size:9px; letter-spacing:4px; opacity:0.4; color:#00ffcc; margin-bottom:16px; }
+.tsec-label {
+  font-size:9px; letter-spacing:4px; opacity:0.45; color:#00ffcc;
+  border-bottom:1px solid rgba(0,255,204,0.12);
+  padding-bottom:4px; margin-bottom:8px;
+}
+.trade-row {
+  display:flex; align-items:center; gap:8px;
+  margin-bottom:6px; font-size:11px; color:#00ffcc;
+}
+.t-name { width:100px; letter-spacing:1px; }
+.t-price { width:70px; color:#ffdd44; }
+.t-owned { width:30px; opacity:0.5; }
+.tbtn {
+  background:rgba(0,255,204,0.06); border:1px solid rgba(0,255,204,0.3);
+  color:#00ffcc; font-family:'Courier New',monospace;
+  font-size:9px; letter-spacing:2px; padding:3px 8px;
+  cursor:pointer; transition:all 0.12s;
+}
+.tbtn:hover { background:rgba(0,255,204,0.2); }
+.tbtn:disabled { opacity:0.25; cursor:default; pointer-events:none; }
+.tbtn.sell { border-color:rgba(255,200,50,0.3); color:#ffdd44; }
+.tbtn.sell:hover { background:rgba(255,200,50,0.18); }
+.svc-row { margin-bottom:4px; margin-top:12px; }
+.svcbtn {
+  background:rgba(68,153,255,0.06); border:1px solid rgba(68,153,255,0.3);
+  color:#88aaff; font-family:'Courier New',monospace;
+  font-size:9px; letter-spacing:2px; padding:4px 12px;
+  cursor:pointer; margin-right:6px;
+}
+.svcbtn:hover { background:rgba(68,153,255,0.18); }
+#trade-msg { font-size:9px; letter-spacing:2px; color:#ffdd44; min-height:14px; margin:8px 0; }
+#trade-close {
+  float:right; background:rgba(255,80,80,0.06);
+  border:1px solid rgba(255,80,80,0.4); color:#ff8888;
+  font-family:'Courier New',monospace; font-size:9px; letter-spacing:3px;
+  padding:5px 16px; cursor:pointer;
+}
+#trade-close:hover { background:rgba(255,80,80,0.2); }
+
+#title-screen {
+  position:fixed; top:0; left:0; width:100%; height:100%;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  z-index:300; pointer-events:all;
+  background:radial-gradient(ellipse at 50% 40%, #001420 0%, #000408 70%, #000 100%);
+}
+#title-screen h1 {
+  font-size:52px; letter-spacing:14px; color:#00ffcc;
+  text-shadow:0 0 40px #00ffcc, 0 0 80px rgba(0,255,204,0.2);
+  margin-bottom:4px;
+}
+.title-sub { font-size:10px; letter-spacing:8px; color:rgba(0,255,204,0.35); margin-bottom:8px; }
+.title-sub2 { font-size:9px; letter-spacing:5px; color:rgba(0,255,204,0.2); margin-bottom:40px; }
+#start-btn {
+  background:rgba(0,255,204,0.06); border:1px solid #00ffcc; color:#00ffcc;
+  font-family:'Courier New',monospace; font-size:12px; letter-spacing:6px;
+  padding:12px 40px; cursor:pointer; animation:blink 1.4s infinite;
+}
+#start-btn:hover { background:rgba(0,255,204,0.15); animation:none; }
+
+#game-over {
+  display:none; position:fixed; top:50%; left:50%;
+  transform:translate(-50%,-50%);
+  text-align:center; z-index:200; pointer-events:all;
+}
+#game-over h1 {
+  font-size:40px; letter-spacing:8px; color:#ff4444;
+  text-shadow:0 0 30px #ff4444; margin-bottom:20px;
+}
+#restart-btn {
+  background:rgba(255,80,80,0.06); border:1px solid #ff4444; color:#ff4444;
+  font-family:'Courier New',monospace; font-size:12px; letter-spacing:5px;
+  padding:10px 28px; cursor:pointer;
+}
+#restart-btn:hover { background:rgba(255,80,80,0.2); }
+
+.ctrl-hint {
+  font-size:9px; letter-spacing:3px; color:rgba(0,255,204,0.25);
+  text-align:center; line-height:2.2; margin-top:20px;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <div id="sys-name">SOL SYSTEM</div>
+  <div id="speed-disp">0 M/S</div>
+  <div id="vel-info"></div>
+  <div id="target-info"></div>
+  <div id="flash-msg"></div>
+  <div id="dock-prompt">[ E ] DOCK</div>
+  <div id="warn-overlay" style="position:absolute;top:62px;left:50%;transform:translateX(-50%);
+    font-size:10px;letter-spacing:3px;color:#ffcc00;pointer-events:none;opacity:0;white-space:nowrap;
+    text-shadow:0 0 8px #ffaa0088;transition:opacity 0.2s;"></div>
+  <div id="big-warn" style="position:absolute;top:42%;left:50%;transform:translate(-50%,-50%);
+    font-size:22px;letter-spacing:5px;color:#ff2222;pointer-events:none;opacity:0;white-space:nowrap;
+    font-weight:bold;text-shadow:0 0 24px #ff2222,0 0 60px #ff222266;transition:opacity 0.4s;"></div>
+  <div id="hud-left">
+    <div class="stat-row">
+      <div class="stat-label">ARMOUR</div>
+      <div class="stat-bar"><div class="stat-fill s-armour" id="b-armour" style="width:100%"></div></div>
+      <div class="stat-val" id="v-armour">200</div>
+    </div>
+    <div class="stat-row">
+      <div class="stat-label">STRUCT</div>
+      <div class="stat-bar"><div class="stat-fill s-struct" id="b-struct" style="width:100%"></div></div>
+      <div class="stat-val" id="v-struct">100</div>
+    </div>
+    <div class="stat-row">
+      <div class="stat-label">FUEL</div>
+      <div class="stat-bar"><div class="stat-fill s-fuel" id="b-fuel" style="width:100%"></div></div>
+      <div class="stat-val" id="v-fuel">100</div>
+    </div>
+  </div>
+  <div id="hud-right">
+    <div id="wpn-disp">AUTO CANNON</div>
+    <div id="credits-disp">⬡ 1500 CR</div>
+    <div id="cargo-disp">CARGO: 0/20</div>
+    <div id="outlaw-disp" style="display:none;color:#ff4444;font-weight:bold;margin-top:4px;letter-spacing:1px;font-size:10px;"></div>
+    <div id="mission-disp" style="display:none;color:#ffdd44;font-size:9px;margin-top:4px;letter-spacing:1px;line-height:1.5;max-width:160px;text-align:right;"></div>
+  </div>
+</div>
+
+<div id="trade-screen">
+  <h2 id="trade-title">STATION</h2>
+  <div class="trade-sub" id="trade-sys">SOL SYSTEM</div>
+  <div style="display:flex;gap:0;margin-bottom:14px;">
+    <div class="dock-tab active" id="tab-market" onclick="switchTab('market')"
+      style="flex:1;padding:6px 0;text-align:center;font-size:9px;letter-spacing:3px;border:1px solid rgba(0,255,204,0.3);color:#00ffcc;cursor:pointer;background:rgba(0,255,204,0.1);">MARKET</div>
+    <div class="dock-tab" id="tab-shipyard" onclick="switchTab('shipyard')"
+      style="flex:1;padding:6px 0;text-align:center;font-size:9px;letter-spacing:3px;border:1px solid rgba(0,255,204,0.15);color:rgba(0,255,204,0.4);cursor:pointer;background:transparent;">SHIPYARD</div>
+    <div class="dock-tab" id="tab-missions" onclick="switchTab('missions')"
+      style="flex:1;padding:6px 0;text-align:center;font-size:9px;letter-spacing:3px;border:1px solid rgba(0,255,204,0.15);color:rgba(0,255,204,0.4);cursor:pointer;background:transparent;">MISSIONS</div>
+    <div class="dock-tab" id="tab-rep" onclick="switchTab('rep')"
+      style="flex:1;padding:6px 0;text-align:center;font-size:9px;letter-spacing:3px;border:1px solid rgba(0,255,204,0.15);color:rgba(0,255,204,0.4);cursor:pointer;background:transparent;">FACTIONS</div>
+  </div>
+  <div id="trade-msg"></div>
+  <!-- MARKET PANEL -->
+  <div id="panel-market">
+    <div class="tsec-label">GOODS</div>
+    <div id="trade-goods"></div>
+    <div class="svc-row">
+      <button class="svcbtn" id="repair-btn">REPAIR ARMOUR (50 CR)</button>
+      <button class="svcbtn" id="repair-struct-btn">REPAIR STRUCTURE (100 CR)</button>
+      <button class="svcbtn" id="refuel-btn">REFUEL (30 CR)</button>
+    </div>
+    <div id="flavour-text" style="margin-top:12px;font-size:9px;letter-spacing:1px;opacity:0.4;line-height:1.8;
+      border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;color:#00ffcc;"></div>
+  </div>
+  <!-- SHIPYARD PANEL -->
+  <div id="panel-shipyard" style="display:none;">
+    <div class="tsec-label">HULL</div>
+    <div id="sy-ships"></div>
+    <div class="tsec-label" style="margin-top:12px;">ENGINE</div>
+    <div id="sy-engines"></div>
+    <div class="tsec-label" style="margin-top:12px;">ARMOUR</div>
+    <div id="sy-armour"></div>
+    <div class="tsec-label" style="margin-top:12px;">WEAPONS · HARDPOINTS</div>
+    <div id="sy-weapons"></div>
+  </div>
+  <!-- REP PANEL -->
+  <div id="panel-rep" style="display:none;">
+    <div id="rep-content"></div>
+  </div>
+  <!-- MISSIONS PANEL -->
+  <div id="panel-missions" style="display:none;">
+    <div id="missions-active" style="margin-bottom:12px;"></div>
+    <div id="missions-board"></div>
+  </div>
+  <button id="trade-close">LAUNCH</button>
+</div>
+
+<!-- STAR MAP -->
+<div id="starmap-screen" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:480px;background:rgba(0,4,14,0.97);border:1px solid #4499ff;padding:20px 24px;
+  pointer-events:all;cursor:default;box-shadow:0 0 50px rgba(68,153,255,0.15);
+  font-family:'Courier New',monospace;color:#4499ff;z-index:100;">
+  <h2 style="font-size:15px;letter-spacing:6px;color:#fff;margin-bottom:2px;">STAR MAP</h2>
+  <div style="font-size:9px;letter-spacing:3px;opacity:0.4;margin-bottom:10px;">GALACTIC NAVIGATION CHART</div>
+  <canvas id="sm-canvas" width="432" height="260" style="display:block;width:100%;height:260px;
+    border:1px solid rgba(68,153,255,0.25);margin-bottom:10px;cursor:pointer;"></canvas>
+  <div id="sm-info" style="font-size:10px;letter-spacing:2px;color:#88aaff;min-height:16px;margin-bottom:10px;">SELECT A SYSTEM</div>
+  <button id="jump-btn" style="background:rgba(68,153,255,0.08);border:1px solid rgba(68,153,255,0.35);
+    color:#4499ff;font-family:'Courier New',monospace;font-size:10px;letter-spacing:3px;padding:5px 16px;
+    cursor:pointer;margin-right:8px;">JUMP</button>
+  <button id="sm-close" style="background:rgba(255,80,80,0.08);border:1px solid rgba(255,80,80,0.4);
+    color:#ff8888;font-family:'Courier New',monospace;font-size:10px;letter-spacing:3px;padding:5px 16px;
+    cursor:pointer;">CLOSE</button>
+</div>
+
+<div id="title-screen">
+  <h1>VOIDRUNNER</h1>
+  <div class="title-sub">FIRST PERSON VECTOR</div>
+  <div class="title-sub2">NEWTONIAN SPACE TRADING &amp; COMBAT</div>
+  <div style="margin-bottom:24px;pointer-events:all;">
+    <div style="font-size:9px;letter-spacing:4px;opacity:0.4;margin-bottom:10px;color:#00ffcc;">CHOOSE STARTING WEAPON</div>
+    <div id="wpn-picker" style="display:flex;gap:12px;justify-content:center;">
+      <div class="wpn-card selected" data-type="ballistic" onclick="pickStartWpn(this,'ballistic')"
+        style="padding:12px 16px;border:1px solid rgba(0,255,204,0.3);background:rgba(0,255,204,0.06);cursor:pointer;text-align:center;min-width:130px;transition:all 0.12s;pointer-events:all;">
+        <div style="font-size:8px;letter-spacing:3px;opacity:0.4;margin-bottom:4px;color:#ffcc44;">BALLISTIC</div>
+        <div style="font-size:11px;letter-spacing:2px;color:#fff;margin-bottom:8px;">AUTO CANNON</div>
+        <div style="font-size:8px;opacity:0.4;line-height:1.8;color:#00ffcc;">Fast fire · Kinetic<br>Good all-rounder</div>
+      </div>
+      <div class="wpn-card" data-type="laser" onclick="pickStartWpn(this,'laser')"
+        style="padding:12px 16px;border:1px solid rgba(0,255,204,0.15);background:rgba(0,255,204,0.02);cursor:pointer;text-align:center;min-width:130px;transition:all 0.12s;pointer-events:all;">
+        <div style="font-size:8px;letter-spacing:3px;opacity:0.4;margin-bottom:4px;color:#00ffff;">LASER</div>
+        <div style="font-size:11px;letter-spacing:2px;color:#fff;margin-bottom:8px;">ALPHA LASER</div>
+        <div style="font-size:8px;opacity:0.4;line-height:1.8;color:#00ffcc;">Sustained beam<br>Equal armour/struct</div>
+      </div>
+      <div class="wpn-card" data-type="hypervelocity" onclick="pickStartWpn(this,'hypervelocity')"
+        style="padding:12px 16px;border:1px solid rgba(0,255,204,0.15);background:rgba(0,255,204,0.02);cursor:pointer;text-align:center;min-width:130px;transition:all 0.12s;pointer-events:all;">
+        <div style="font-size:8px;letter-spacing:3px;opacity:0.4;margin-bottom:4px;color:#cc88ff;">HYPERVELOCITY</div>
+        <div style="font-size:11px;letter-spacing:2px;color:#fff;margin-bottom:8px;">PLASMA CANNON</div>
+        <div style="font-size:8px;opacity:0.4;line-height:1.8;color:#00ffcc;">Long range · Slow<br>High impact</div>
+      </div>
+    </div>
+  </div>
+  <div style="margin-bottom:16px;pointer-events:all;">
+    <label style="font-size:9px;letter-spacing:2px;opacity:0.5;color:#00ffcc;cursor:pointer;user-select:none;">
+      <input type="checkbox" id="invert-pitch" style="vertical-align:middle;cursor:pointer;margin-right:6px;">
+      INVERT PITCH (Y-AXIS)
+    </label>
+  </div>
+  <button id="start-btn">LAUNCH</button>
+  <div class="ctrl-hint">
+    W — THRUST FORWARD &nbsp;·&nbsp; S — RETRO BRAKE<br>
+    MOUSE — YAW &amp; PITCH &nbsp;·&nbsp; A/D — ROLL &nbsp;·&nbsp; CLICK — FIRE<br>
+    Q — CYCLE WEAPON GROUP &nbsp;·&nbsp; E — DOCK &nbsp;·&nbsp; M — STAR MAP<br>
+    T — TARGET &nbsp;·&nbsp; Y — CYCLE &nbsp;·&nbsp; L — LOCK &nbsp;·&nbsp; N — NAV &nbsp;·&nbsp; SHIFT — AFTERBURNER<br>
+    <br>
+    NEWTONIAN PHYSICS — VELOCITY PERSISTS · DRIFT IS REAL
+  </div>
+</div>
+
+<div id="game-over">
+  <h1>SHIP DESTROYED</h1>
+  <button id="restart-btn">NEW GAME</button>
+</div>
+
+<script src="src/canvas.js"></script>
+<script src="src/math.js"></script>
+<script src="src/data-models.js"></script>
+<script src="src/data-equipment.js"></script>
+<script src="src/data-systems.js"></script>
+<script src="src/faction-sim.js"></script>
+<script src="src/npc.js"></script>
+<script src="src/player.js"></script>
+<script src="src/missions.js"></script>
+<script src="src/trading-ui.js"></script>
+<script src="src/renderer.js"></script>
+<script src="src/game.js"></script>
+</body>
+</html>
