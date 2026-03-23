@@ -370,10 +370,16 @@ window.pickStartWpn = function(el, type){
 document.getElementById('start-btn').onclick=()=>{
   invertPitch = document.getElementById('invert-pitch').checked;
   document.getElementById('title-screen').style.display='none';
-  initScene();       // one-time Three.js setup
-  init();            // game state
-  initSceneForSystem(G); // build 3D scene for starting system
-  lastT=performance.now();requestAnimationFrame(loop);
+  try {
+    initScene();           // one-time Three.js setup
+    init();                // game state
+    initSceneForSystem(G); // build 3D scene for starting system
+    lastT=performance.now();
+    requestAnimationFrame(loop);
+  } catch(err) {
+    document.body.style.background='#000';
+    document.body.innerHTML=`<pre style="color:#ff4444;padding:30px;font-size:13px">STARTUP ERROR:\n${err.message}\n\n${err.stack}</pre>`;
+  }
 };
 document.getElementById('restart-btn').onclick=()=>{
   document.getElementById('game-over').style.display='none';
