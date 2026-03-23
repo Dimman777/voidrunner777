@@ -327,6 +327,7 @@ function loadSystem(sysKey){
   G.stations.forEach(st=>{ spawnNPC('corporate',null,st); });
   for(let i=0;i<3;i++) spawnNPC('merc');
 
+  initSceneForSystem(G);
   flash(`ARRIVED: ${s.name}`);
 }
 
@@ -337,15 +338,18 @@ function loop(ts){
   const dt=Math.min(.05,(ts-lastT)/1000); lastT=ts;
   try {
     if(G&&!G.dead){update(dt);updHUD();}
-    draw();
+    drawFrame(G, dt);
+    drawHUD();
   } catch(err) {
-    // Display error on screen so we can diagnose freezes
-    ctx.fillStyle='#000'; ctx.fillRect(0,0,W,200);
+    // Display error on HUD canvas so we can diagnose freezes
+    ctx.fillStyle='rgba(0,0,0,0.85)'; ctx.fillRect(0,0,W,200);
     ctx.fillStyle='#ff4444'; ctx.font='14px Courier New'; ctx.textAlign='left';
     ctx.fillText('ERROR: '+err.message, 20, 30);
     ctx.fillText('at: '+(err.stack||'').split('\n')[1]?.trim()?.substring(0,80), 20, 55);
-    ctx.fillText('enemies:'+G.enemies.length+' parts:'+G.parts.length+' pings:'+G.distressPings.length, 20, 80);
-    ctx.fillText('bullets:'+G.bullets.length+' eBullets:'+G.eBullets.length, 20, 105);
+    if(G){
+      ctx.fillText('enemies:'+G.enemies.length+' parts:'+G.parts.length+' pings:'+G.distressPings.length, 20, 80);
+      ctx.fillText('bullets:'+G.bullets.length+' eBullets:'+G.eBullets.length, 20, 105);
+    }
     console.error('VOIDRUNNER ERROR:', err);
   }
   requestAnimationFrame(loop);
@@ -366,9 +370,14 @@ window.pickStartWpn = function(el, type){
 document.getElementById('start-btn').onclick=()=>{
   invertPitch = document.getElementById('invert-pitch').checked;
   document.getElementById('title-screen').style.display='none';
-  init();lastT=performance.now();requestAnimationFrame(loop);
+  initScene();       // one-time Three.js setup
+  init();            // game state
+  initSceneForSystem(G); // build 3D scene for starting system
+  lastT=performance.now();requestAnimationFrame(loop);
 };
 document.getElementById('restart-btn').onclick=()=>{
   document.getElementById('game-over').style.display='none';
-  init();lastT=performance.now();
+  init();
+  initSceneForSystem(G);
+  lastT=performance.now();
 };

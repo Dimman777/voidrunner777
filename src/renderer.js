@@ -8,24 +8,12 @@ function proj(cp){ const f=(W/2)/Math.tan(FOV/2); const x=CX+cp.x/cp.z*f; const 
 // ═══════════════════════════════════════════════════════════
 //  DRAW
 // ═══════════════════════════════════════════════════════════
-function draw(){
-  ctx.fillStyle='#000006';ctx.fillRect(0,0,W,H);
+function drawHUD(){
+  ctx.clearRect(0,0,W,H);
   if(!G)return;
   const p=G.p, cPos=p.pos, cQ=p.ori;
 
-  // Stars
-  G.bgStars.forEach(s=>{
-    const wp=v3add(cPos,v3scale(s.dir,50000));
-    const cp=w2c(wp,cPos,cQ);
-    if(cp.z<=0)return;
-    const sp=proj(cp);
-    if(!sp||sp.x<-20||sp.x>W+20||sp.y<-20||sp.y>H+20)return;
-    ctx.globalAlpha=s.br*.75;ctx.fillStyle='#fff';
-    ctx.beginPath();ctx.arc(sp.x,sp.y,s.sz,0,PI2);ctx.fill();
-  });
-  ctx.globalAlpha=1;
-
-  // Sun
+  // Sun glow — kept in 2D overlay (sprite work is future)
   const sunC=w2c(v3(0,1000,-8000),cPos,cQ);
   if(sunC.z>0){
     const sp=proj(sunC);
@@ -36,41 +24,6 @@ function draw(){
       ctx.fillStyle=SYS[G.sys].starCol;ctx.beginPath();ctx.arc(sp.x,sp.y,4,0,PI2);ctx.fill();
     }
   }
-
-  // Planets
-  const f=(W/2)/Math.tan(FOV/2);
-  G.planets.forEach(pl=>{
-    const cp=w2c(pl.pos,cPos,cQ);
-    if(cp.z<=10)return;
-    const sp=proj(cp);if(!sp)return;
-    const sR=Math.max(2,pl.r/cp.z*f);
-    if(sp.x<-sR*2||sp.x>W+sR*2||sp.y<-sR*2||sp.y>H+sR*2)return;
-    ctx.globalAlpha=.15;
-    const gg=ctx.createRadialGradient(sp.x,sp.y,sR*.5,sp.x,sp.y,sR*2);
-    gg.addColorStop(0,pl.col);gg.addColorStop(1,'transparent');
-    ctx.fillStyle=gg;ctx.beginPath();ctx.arc(sp.x,sp.y,sR*2,0,PI2);ctx.fill();
-    ctx.globalAlpha=.8;ctx.strokeStyle=pl.col;ctx.lineWidth=1.5;
-    ctx.beginPath();ctx.arc(sp.x,sp.y,sR,0,PI2);ctx.stroke();
-    ctx.globalAlpha=.2;ctx.lineWidth=.5;
-    for(let lat=-.5;lat<=.5;lat+=.5){
-      const r2=sR*Math.cos(lat*PI*.5),y2=sp.y-sR*Math.sin(lat*PI*.5)*.5;
-      ctx.beginPath();ctx.ellipse(sp.x,y2,r2,r2*.3,0,0,PI2);ctx.stroke();
-    }
-    ctx.globalAlpha=.5;ctx.fillStyle=pl.col;ctx.font='9px Courier New';ctx.textAlign='center';
-    ctx.fillText(pl.name,sp.x,sp.y+sR+14);ctx.globalAlpha=1;
-  });
-
-  // Stations
-  G.stations.forEach(st=>drawWF(st.pos,st.model,st.col,cPos,cQ,st.rAngle,0,st.name));
-  // Pirate Bases
-  G.pBases.forEach(pb=>drawWF(pb.pos,pb.model,pb.col,cPos,cQ,pb.rAngle,0,pb.name));
-  // Launch Zone
-  if(G.launchZone){
-    G.launchZone.rAngle=(G.launchZone.rAngle||0)+.3*0.016;
-    drawWF(G.launchZone.pos,G.launchZone.model,'#50c8ff',cPos,cQ,G.launchZone.rAngle,0,G.launchZone.name);
-  }
-  // Enemies
-  G.enemies.forEach(e=>drawWF(e.pos,e.model,e.col,cPos,cQ,e.yaw,e.pitch,null,e));
 
   // Escort mission target indicator — pulsing green brackets
   const escortNPC = G.missions?.active?._escortNPC;
@@ -101,29 +54,6 @@ function draw(){
       }
     }
   }
-
-  // Bullets
-  [...G.bullets,...G.eBullets].forEach(b=>{
-    const cp=w2c(b.pos,cPos,cQ);
-    if(cp.z<=NEAR)return;
-    const sp=proj(cp);if(!sp)return;
-    const al=Math.min(1,b.life*3);
-    ctx.globalAlpha=al*.9;ctx.fillStyle=b.col;
-    ctx.shadowBlur=8;ctx.shadowColor=b.col;
-    const r=Math.max(1,b.sz*50/cp.z);
-    ctx.beginPath();ctx.arc(sp.x,sp.y,r,0,PI2);ctx.fill();
-    const trail=v3sub(b.pos,v3scale(b.vel,.012));
-    const tcp=w2c(trail,cPos,cQ);
-    if(tcp.z>NEAR){
-      const tsp=proj(tcp);
-      if(tsp){
-        ctx.globalAlpha=al*.35;ctx.strokeStyle=b.col;ctx.lineWidth=Math.max(.5,r*.5);
-        ctx.beginPath();ctx.moveTo(sp.x,sp.y);ctx.lineTo(tsp.x,tsp.y);ctx.stroke();
-      }
-    }
-    ctx.shadowBlur=0;
-  });
-  ctx.globalAlpha=1;
 
   // Player laser beams — screen-space rendering
   // (A beam along the view axis projects to a single pixel in 3D, so we draw in 2D)
@@ -193,21 +123,6 @@ function draw(){
     });
     ctx.globalAlpha = 1;
   }
-
-  // Particles
-  G.parts.forEach(pt=>{
-    const cp=w2c(pt.pos,cPos,cQ);
-    if(cp.z<=NEAR)return;
-    const sp=proj(cp);if(!sp)return;
-    // Smooth fade: full brightness for first 0.4s, then linear fade out
-    const alpha = pt.life > 0.4 ? 0.7 : (pt.life / 0.4) * 0.7;
-    // Size shrinks as particle ages
-    const ageFrac = Math.min(1, pt.life * 0.6);
-    const drawSz = Math.max(.4, pt.sz * ageFrac * 30 / cp.z);
-    ctx.globalAlpha=alpha; ctx.fillStyle=pt.col;
-    ctx.beginPath();ctx.arc(sp.x,sp.y,drawSz,0,PI2);ctx.fill();
-  });
-  ctx.globalAlpha=1;
 
   // Cargo boxes
   G.cargoBoxes.forEach(box=>{
@@ -304,67 +219,6 @@ function draw(){
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-//  WIREFRAME RENDERER
-// ═══════════════════════════════════════════════════════════
-function drawWF(wPos,model,col,cPos,cQ,oYaw,oPitch,label,enemy){
-  const dist=v3len(v3sub(wPos,cPos));
-  if(dist>10000)return;
-
-  const projected=model.verts.map(v=>{
-    let pt=v3(v[0],v[1],v[2]);
-    pt=eRotY(oYaw||0)(pt);
-    if(oPitch) pt=eRotX(oPitch)(pt);
-    pt=v3add(pt,wPos);
-    const cp=w2c(pt,cPos,cQ);
-    return cp.z>NEAR?proj(cp):null;
-  });
-
-  if(!projected.some(p=>p))return;
-
-  const al=Math.min(1,Math.max(.08,1-dist/6000));
-  ctx.strokeStyle=col;ctx.lineWidth=dist<500?1.8:1;
-  ctx.globalAlpha=al;ctx.shadowBlur=4;ctx.shadowColor=col;
-
-  model.edges.forEach(([a,b])=>{
-    const pa=projected[a],pb=projected[b];
-    if(!pa||!pb)return;
-    if(pa.x<-300||pa.x>W+300||pa.y<-300||pa.y>H+300)return;
-    if(pb.x<-300||pb.x>W+300||pb.y<-300||pb.y>H+300)return;
-    ctx.beginPath();ctx.moveTo(pa.x,pa.y);ctx.lineTo(pb.x,pb.y);ctx.stroke();
-  });
-  ctx.shadowBlur=0;
-
-  const cc=w2c(wPos,cPos,cQ);
-  if(cc.z>NEAR){
-    const cs=proj(cc);
-    if(cs){
-      const txt=label||(enemy?enemy.name:'');
-      if(txt){
-        ctx.globalAlpha=al*.6;ctx.fillStyle=col;
-        ctx.font='8px Courier New';ctx.textAlign='center';
-        ctx.fillText(txt,cs.x,cs.y-28);
-        ctx.font='7px Courier New';ctx.globalAlpha=al*.3;
-        ctx.fillText(`${Math.round(dist)}m`,cs.x,cs.y-19);
-      }
-      if(enemy){
-        const bw=30;
-        const armF=enemy.maxArmour>0?Math.max(0,enemy.armour/enemy.maxArmour):0;
-        const strF=enemy.maxStruct>0?Math.max(0,enemy.struct/enemy.maxStruct):0;
-        ctx.globalAlpha=al*.7;
-        // Armour bar
-        ctx.fillStyle='#111';ctx.fillRect(cs.x-bw/2,cs.y-40,bw,3);
-        ctx.fillStyle=armF>.5?'#00ffcc':'#ffaa00';
-        if(armF>0) ctx.fillRect(cs.x-bw/2,cs.y-40,bw*armF,3);
-        // Structure bar
-        ctx.fillStyle='#111';ctx.fillRect(cs.x-bw/2,cs.y-36,bw,3);
-        ctx.fillStyle=strF>.5?'#00ff88':strF>.25?'#ffaa00':'#ff4444';
-        if(strF>0) ctx.fillRect(cs.x-bw/2,cs.y-36,bw*strF,3);
-      }
-    }
-  }
-  ctx.globalAlpha=1;
-}
 
 // ═══════════════════════════════════════════════════════════
 //  VELOCITY VECTOR (prograde / retrograde markers)
