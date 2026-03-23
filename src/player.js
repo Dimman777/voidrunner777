@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════
 //  INPUT STATE
 // ═══════════════════════════════════════════════════════════
-let keys={}, mX=0, mY=0, mDown=false;
+let keys={}, mX=null, mY=null, mDown=false;
 
 // ═══════════════════════════════════════════════════════════
 //  INPUT HANDLERS
@@ -82,14 +82,15 @@ function update(dt){
 
   // ── MOUSE → SHIP NOSE ──
   // Mouse offset from center controls turn rate.
+  // mX/mY are null until first mouse move — treat as screen center (zero offset).
   const halfW=W*.45, halfH=H*.45;
-  const mx=Math.max(-1,Math.min(1,(mX-CX)/halfW));
-  const my=Math.max(-1,Math.min(1,(mY-CY)/halfH));
+  const mx = mX===null ? 0 : Math.max(-1,Math.min(1,(mX-CX)/halfW));
+  const my = mY===null ? 0 : Math.max(-1,Math.min(1,(mY-CY)/halfH));
 
   // Non-linear: squared for fine control near center
   // Yaw rate = HALF of pitch rate for proper space-sim feel
   const yawRate  =  mx * Math.abs(mx) * p.turnRate * 0.5;
-  const pitchMul = invertPitch ? 1 : -1;  // default: mouse-up = pitch up (negative my)
+  const pitchMul = invertPitch ? 1 : -1;  // default (airplane): mouse-down = pitch up (positive my)
   const pitchRate= pitchMul * my * Math.abs(my) * p.turnRate;
 
   // A/D keys = roll (same rate as pitch)

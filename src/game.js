@@ -370,6 +370,7 @@ window.pickStartWpn = function(el, type){
 document.getElementById('start-btn').onclick=()=>{
   invertPitch = document.getElementById('invert-pitch').checked;
   document.getElementById('title-screen').style.display='none';
+  mX=null; mY=null; mDown=false; // discard button-click mouse position
   try {
     initScene();           // one-time Three.js setup
     init();                // game state
@@ -383,6 +384,7 @@ document.getElementById('start-btn').onclick=()=>{
 };
 document.getElementById('restart-btn').onclick=()=>{
   document.getElementById('game-over').style.display='none';
+  mX=null; mY=null; mDown=false; // discard stale mouse position
   init();
   initSceneForSystem(G);
   lastT=performance.now();

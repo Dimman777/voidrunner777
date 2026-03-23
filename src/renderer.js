@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════
 const FOV = Math.PI / 2.5;
 const NEAR = 0.5;
-function proj(cp){ const f=(W/2)/Math.tan(FOV/2); const x=CX+cp.x/cp.z*f; const y=CY-cp.y/cp.z*f; return {x,y}; }
+function proj(cp){ const f=(H/2)/Math.tan(FOV/2); const x=CX+cp.x/cp.z*f; const y=CY-cp.y/cp.z*f; return {x,y}; }
 
 // ═══════════════════════════════════════════════════════════
 //  DRAW

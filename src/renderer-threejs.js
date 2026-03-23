@@ -4,9 +4,11 @@
 //  Coordinate bridge:
 //    Game world uses +Z forward (left-handed).
 //    Three.js camera uses -Z forward (right-handed).
-//    Fix: _sceneRoot has scale.z = -1, so all scene objects
-//    are placed at game (x, y, z) → world (x, y, -z).
-//    Camera uses game coordinates directly (no conversion).
+//    _sceneRoot has scale.z = -1: scene objects placed at
+//      game (x, y, z) → world (x, y, -z).
+//    Camera position: world (x, y, -z) to match scene Z-flip.
+//    Camera quaternion: {w, x, -y, z} — negating only Y component
+//      (M*q*M, M=diag(1,1,-1)) fixes yaw while preserving pitch/roll.
 //    Star field is in _scene (not sceneRoot) with Z negated
 //    in its geometry so it distributes correctly around the camera.
 // ═══════════════════════════════════════════════════════════
@@ -26,7 +28,7 @@ const MAX_BULLETS = 300;
 let _bulletPositions, _bulletColors, _bulletGeo, _bulletPoints;
 
 // Particle point cloud
-const MAX_PARTS = 500;
+const MAX_PARTS = 1500;
 let _partPositions, _partColors, _partGeo, _partPoints;
 
 // Material cache (color string → LineBasicMaterial)
@@ -94,8 +96,9 @@ function initScene() {
   _bulletGeo.setAttribute('color',    new THREE.BufferAttribute(_bulletColors,    3).setUsage(THREE.DynamicDrawUsage));
   _bulletGeo.setDrawRange(0, 0);
   _bulletPoints = new THREE.Points(_bulletGeo, new THREE.PointsMaterial({
-    size: 3, vertexColors: true, sizeAttenuation: false,
+    size: 5, vertexColors: true, sizeAttenuation: false,
   }));
+  _bulletPoints.frustumCulled = false;
   _sceneRoot.add(_bulletPoints);
 
   // Particle point cloud (in sceneRoot)
@@ -108,6 +111,7 @@ function initScene() {
   _partPoints = new THREE.Points(_partGeo, new THREE.PointsMaterial({
     size: 4, vertexColors: true, sizeAttenuation: false,
   }));
+  _partPoints.frustumCulled = false;
   _sceneRoot.add(_partPoints);
 
   window.addEventListener('resize', () => {
@@ -232,13 +236,19 @@ function drawFrame(G, dt) {
   if (!G || !_renderer) return;
   const p = G.p;
 
-  // Camera uses game coordinates directly — sceneRoot Z-flip handles the rest.
-  // THREE.Quaternion.set(x, y, z, w) — same order as our {x, y, z, w} struct.
-  _camera.position.set(p.pos.x, p.pos.y, p.pos.z);
-  _camera.quaternion.set(p.ori.x, p.ori.y, p.ori.z, p.ori.w);
+  // Camera Z is negated to match sceneRoot Z-flip (objects live at world -z_game).
+  // Camera quaternion derivation: q_cam = conj(M * conj(p.ori) * M), M=diag(1,1,-1).
+  // M conjugation negates rotations around X and Y axes, preserves Z:
+  //   M·Rx(α)·M = Rx(-α)  →  negate x component
+  //   M·Ry(θ)·M = Ry(-θ)  →  negate y component
+  //   M·Rz(φ)·M = Rz(φ)   →  keep z component
+  // Result: q_cam = (w, -x, -y, z)
+  // THREE.Quaternion.set(x, y, z, w).
+  _camera.position.set(p.pos.x, p.pos.y, -p.pos.z);
+  _camera.quaternion.set(-p.ori.x, -p.ori.y, p.ori.z, p.ori.w);
 
-  // Star field follows camera in world space
-  if (_starField) _starField.position.set(p.pos.x, p.pos.y, p.pos.z);
+  // Star field follows camera in world space (Z negated to match camera)
+  if (_starField) _starField.position.set(p.pos.x, p.pos.y, -p.pos.z);
 
   // Rotate stations & bases
   _stationGroup.children.forEach(ls => {
