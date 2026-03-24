@@ -26,7 +26,7 @@ function init(){
   for(let i=0; i<shipDef.engineSlots; i++) engines.push(0); // index into ENGINE_TIERS
 
   G={
-    sys:'sol',time:0,mode:'space',dead:false,
+    sys:'sol',time:0,mode:'space',dead:false,cargoTarget:null,
     p:{
       pos:v3(0,0,0),
       vel:v3(0,0,0),
@@ -124,6 +124,9 @@ function getNavList(){
 function validateTargets(){
   if(G.targetShip && (!G.enemies.includes(G.targetShip) || G.targetShip.struct<=0)){
     G.targetShip=null; G.targetIdx=-1; G.locked=false;
+  }
+  if(G.cargoTarget && !G.cargoBoxes.includes(G.cargoTarget)){
+    G.cargoTarget=null;
   }
 }
 
@@ -297,7 +300,7 @@ function loadSystem(sysKey){
 
   // Clear combat state
   G.enemies=[]; G.bullets=[]; G.eBullets=[]; G.parts=[];
-  G.cargoBoxes=[]; G.distressPings=[]; G.pendingSpawns=[];
+  G.cargoBoxes=[]; G.distressPings=[]; G.pendingSpawns=[]; G.cargoTarget=null;
   G.shockwaves=[]; G.hvFlashes=[];
   G.nearSt=null; G.nearLZ=false;
 

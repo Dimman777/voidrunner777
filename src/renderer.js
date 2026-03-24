@@ -124,26 +124,6 @@ function drawHUD(){
     ctx.globalAlpha = 1;
   }
 
-  // Cargo boxes
-  G.cargoBoxes.forEach(box=>{
-    const cp=w2c(box.pos,cPos,cQ);
-    if(cp.z<=NEAR)return;
-    const sp=proj(cp);if(!sp)return;
-    const fade=Math.min(1,box.life/10);
-    const r=Math.max(2, 100/cp.z);
-    ctx.globalAlpha=fade*.8;
-    ctx.strokeStyle='#88ff44'; ctx.lineWidth=1.5;
-    ctx.shadowBlur=6; ctx.shadowColor='#88ff44';
-    ctx.save(); ctx.translate(sp.x,sp.y); ctx.rotate(box.angle);
-    ctx.strokeRect(-r,-r,r*2,r*2);
-    ctx.beginPath(); ctx.moveTo(-r,0); ctx.lineTo(r,0); ctx.moveTo(0,-r); ctx.lineTo(0,r); ctx.stroke();
-    ctx.restore();
-    ctx.shadowBlur=0;
-    // Label
-    ctx.globalAlpha=fade*.5; ctx.fillStyle='#88ff44';
-    ctx.font='7px Courier New'; ctx.textAlign='center';
-    ctx.fillText(`${box.units} ${(GNAMES[box.good]||box.good).substring(0,6)}`,sp.x,sp.y-r-5);
-  });
   ctx.globalAlpha=1;
 
   // Distress pings
@@ -210,7 +190,9 @@ function drawHUD(){
   drawCrosshair();
   drawMissionMarker();
   drawTargeting();
+  drawCargoTargeting();
   drawNavMFD();
+  drawMouseRing();
 
   // Damage flash
   if(dmgAlpha>0){
@@ -264,6 +246,41 @@ function drawVelMarker(){
 // ═══════════════════════════════════════════════════════════
 //  CROSSHAIR (always at center — IS the ship nose)
 // ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
+//  MOUSE RING — cursor dot + decorative arc ticks
+//  Ring radius matches CSS #mouse-ring (75vh / 2 = H * 0.375).
+//  Cursor dot stays inside ring because mX/mY are clamped in player.js.
+// ═══════════════════════════════════════════════════════════
+function drawMouseRing(){
+  if(!G || G.mode!=='space') return;
+  const r = H * 0.375;          // ring radius
+  const tickR = r * 0.5;        // halfway between center and ring edge
+  const arcSpan = PI / 8;       // 22.5° each side = 45° total arc
+
+  ctx.save();
+
+  // 4 arc ticks at 0°, 90°, 180°, 270°
+  ctx.strokeStyle = 'rgba(0,255,204,0.35)';
+  ctx.lineWidth = 1.5;
+  for(let i = 0; i < 4; i++){
+    const a = i * PI2 / 4;
+    ctx.beginPath();
+    ctx.arc(CX, CY, tickR, a - arcSpan, a + arcSpan);
+    ctx.stroke();
+  }
+
+  // Cursor dot at clamped mouse position
+  const dx = mX === null ? CX : mX;
+  const dy = mY === null ? CY : mY;
+  ctx.globalAlpha = 0.85;
+  ctx.fillStyle = '#00ffcc';
+  ctx.beginPath();
+  ctx.arc(dx, dy, 3, 0, PI2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
 function drawCrosshair(){
   const col=G.nearSt?'#ffdd44':'#00ffcc';
   ctx.strokeStyle=col;ctx.lineWidth=1;ctx.globalAlpha=.6;
@@ -586,7 +603,99 @@ function drawTargeting(){
   ctx.globalAlpha=1;
 }
 
+// ═══════════════════════════════════════════════════════════
+//  CARGO TARGETING — brackets + direction arrow for G.cargoTarget
+//  Mirrors drawTargeting but for cargo boxes (C key).
+// ═══════════════════════════════════════════════════════════
+function drawCargoTargeting(){
+  if(!G.cargoTarget) return;
+  const box=G.cargoTarget;
+  if(!G.cargoBoxes.includes(box)){ G.cargoTarget=null; return; }
+  const p=G.p, col='#88ff44';
+  const dist=v3len(v3sub(box.pos,p.pos));
+  const cp=w2c(box.pos,p.pos,p.ori);
+  if(cp.z>NEAR){
+    const sp=proj(cp);
+    if(sp){
+      const r=Math.max(12,50/cp.z);
+      const pulse=0.5+0.5*Math.sin(G.time*4);
+      const bk=r*0.4;
+      ctx.strokeStyle=col; ctx.lineWidth=1.5; ctx.globalAlpha=0.5+0.4*pulse;
+      ctx.beginPath();
+      ctx.moveTo(sp.x-r,sp.y-r+bk); ctx.lineTo(sp.x-r,sp.y-r); ctx.lineTo(sp.x-r+bk,sp.y-r);
+      ctx.moveTo(sp.x+r-bk,sp.y-r); ctx.lineTo(sp.x+r,sp.y-r); ctx.lineTo(sp.x+r,sp.y-r+bk);
+      ctx.moveTo(sp.x+r,sp.y+r-bk); ctx.lineTo(sp.x+r,sp.y+r); ctx.lineTo(sp.x+r-bk,sp.y+r);
+      ctx.moveTo(sp.x-r+bk,sp.y+r); ctx.lineTo(sp.x-r,sp.y+r); ctx.lineTo(sp.x-r,sp.y+r-bk);
+      ctx.stroke();
+      ctx.globalAlpha=0.5; ctx.fillStyle=col;
+      ctx.font='7px Courier New'; ctx.textAlign='center';
+      ctx.fillText(Math.round(dist)+'m',sp.x,sp.y+r+12);
+      ctx.globalAlpha=1;
+    }
+  }
+  drawDirIndicator(box.pos,col,'CARGO');
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CARGO BOX MFD — single-target panel for G.cargoTarget
+//  Shown in nav MFD slot; mutually exclusive with nav (N clears it).
+// ═══════════════════════════════════════════════════════════
+function drawCargoBoxMFD(){
+  const box=G.cargoTarget;
+  if(!G.cargoBoxes.includes(box)){ G.cargoTarget=null; return; }
+  const p=G.p, col='#88ff44';
+  const dist=v3len(v3sub(box.pos,p.pos));
+  const mfdW=400,mfdH=270,mfdX=CX+30,mfdY=H-mfdH-30;
+
+  ctx.save();
+  ctx.fillStyle='rgba(0,4,14,0.88)';
+  ctx.fillRect(mfdX,mfdY,mfdW,mfdH);
+  ctx.strokeStyle=col+'55'; ctx.lineWidth=1;
+  ctx.strokeRect(mfdX,mfdY,mfdW,mfdH);
+
+  ctx.fillStyle=col; ctx.globalAlpha=0.9;
+  ctx.font='12px Courier New'; ctx.textAlign='left';
+  ctx.fillText('◇ CARGO',mfdX+10,mfdY+18);
+
+  // Spinning wireframe cube — uses box.angle so it rotates with the 3D mesh
+  drawMFDWireframe(M_CARGO_BOX,mfdX+mfdW/2,mfdY+85,70,box.angle,box.angle*0.7,col,0.6);
+
+  ctx.globalAlpha=0.5; ctx.fillStyle=col;
+  ctx.font='11px Courier New'; ctx.textAlign='center';
+  ctx.fillText(Math.round(dist)+' m',mfdX+mfdW/2,mfdY+145);
+
+  // Good name + quantity
+  ctx.globalAlpha=0.8; ctx.fillStyle='#fff';
+  ctx.font='14px Courier New'; ctx.textAlign='left';
+  ctx.fillText((GNAMES[box.good]||box.good).toUpperCase(),mfdX+10,mfdY+175);
+  ctx.fillStyle=col; ctx.globalAlpha=0.6;
+  ctx.font='11px Courier New';
+  ctx.fillText(box.units+' UNITS',mfdX+10,mfdY+195);
+
+  // Distance
+  ctx.globalAlpha=0.5; ctx.fillStyle='#fff'; ctx.font='12px Courier New';
+  ctx.fillText(Math.round(dist)+'m',mfdX+10,mfdY+220);
+
+  // Bearing compass
+  const toBox=v3sub(box.pos,p.pos);
+  const bearing=Math.atan2(v3dot(toBox,qRight(p.ori)),v3dot(toBox,qFwd(p.ori)));
+  const cx2=mfdX+mfdW-40,cy2=mfdY+215;
+  ctx.strokeStyle=col; ctx.globalAlpha=0.4; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.arc(cx2,cy2,22,0,PI2); ctx.stroke();
+  ctx.strokeStyle=col; ctx.globalAlpha=0.7; ctx.lineWidth=2.5;
+  ctx.beginPath(); ctx.moveTo(cx2,cy2);
+  ctx.lineTo(cx2+Math.sin(bearing)*18,cy2-Math.cos(bearing)*18); ctx.stroke();
+  ctx.fillStyle=col; ctx.globalAlpha=0.5;
+  ctx.beginPath(); ctx.arc(cx2,cy2,2,0,PI2); ctx.fill();
+  ctx.globalAlpha=0.35; ctx.font='7px Courier New'; ctx.textAlign='center';
+  ctx.fillText('F',cx2,cy2-27); ctx.fillText('R',cx2+27,cy2+3);
+
+  ctx.restore();
+  ctx.globalAlpha=1;
+}
+
 function drawNavMFD(){
+  if(G.cargoTarget){ drawCargoBoxMFD(); return; }
   if(!G.navTarget) return;
   const t = G.navTarget;
   const p = G.p;
@@ -1007,6 +1116,7 @@ function drawRadar(){
 // ═══════════════════════════════════════════════════════════
 function updHUD(){
   if(!G)return;
+  document.getElementById('mouse-ring').style.display = G.mode==='space' ? 'block' : 'none';
   const p=G.p;
   const ap=p.armour/p.maxArmour,sp=p.struct/p.maxStruct,fp=p.fuel/p.maxFuel;
   document.getElementById('b-armour').style.width=(ap*100)+'%';

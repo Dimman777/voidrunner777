@@ -80,6 +80,15 @@ canvas { display:block; }
   font-size:8px; letter-spacing:2px; opacity:0.35;
   text-align:center;
 }
+#mouse-ring {
+  position:absolute; top:50%; left:50%;
+  transform:translate(-50%,-50%);
+  width:75vh; height:75vh;
+  border-radius:50%;
+  border:1px solid rgba(0,255,204,0.18);
+  pointer-events:none;
+  display:none;
+}
 
 /* Trade Screen */
 #trade-screen {
@@ -181,6 +190,7 @@ canvas { display:block; }
 <canvas id="hud"></canvas>
 
 <div id="ui">
+  <div id="mouse-ring"></div>
   <div id="sys-name">SOL SYSTEM</div>
   <div id="speed-disp">0 M/S</div>
   <div id="vel-info"></div>
@@ -324,7 +334,7 @@ canvas { display:block; }
     W — THRUST FORWARD &nbsp;·&nbsp; S — RETRO BRAKE<br>
     MOUSE — YAW &amp; PITCH &nbsp;·&nbsp; A/D — ROLL &nbsp;·&nbsp; CLICK — FIRE<br>
     Q — CYCLE WEAPON GROUP &nbsp;·&nbsp; E — DOCK &nbsp;·&nbsp; M — STAR MAP<br>
-    T — TARGET &nbsp;·&nbsp; Y — CYCLE &nbsp;·&nbsp; L — LOCK &nbsp;·&nbsp; N — NAV &nbsp;·&nbsp; SHIFT — AFTERBURNER<br>
+    T — TARGET &nbsp;·&nbsp; Y — CYCLE &nbsp;·&nbsp; L — LOCK &nbsp;·&nbsp; N — NAV &nbsp;·&nbsp; C — CARGO &nbsp;·&nbsp; SHIFT — AFTERBURNER<br>
     <br>
     NEWTONIAN PHYSICS — VELOCITY PERSISTS · DRIFT IS REAL
   </div>

@@ -262,6 +262,12 @@ function updBullets(arr,dt,isP){
             const pushDir = v3norm(v3sub(e.pos, b.pos));
             e.vel = v3add(e.vel||v3(0,0,0), v3scale(pushDir, b.impact * 0.1));
           }
+          // HV tumble — angular impulse spins yaw and pitch, damps over ~1.5s
+          if(b.isHV && b.impact > 0){
+            const spinScale = b.impact * 0.015;
+            e.spinYaw   = (e.spinYaw   || 0) + (Math.random() - 0.5) * 2 * spinScale;
+            e.spinPitch = (e.spinPitch || 0) + (Math.random() - 0.5) * 2 * spinScale;
+          }
           // HV flash trail
           if(b.isHV){
             const bDir = v3norm(b.vel);
@@ -519,7 +525,7 @@ function npcFireAt(e, target, dt){
   G.eBullets.push({
     pos:v3add(e.pos,v3scale(ef,e.sz)),
     vel:v3scale(bDir, e.wpn.speed),
-    life:1.2, dmg:e.wpn.dmg, col:e.wpn.col, sz:e.wpn.sz,
+    life:1.2, maxLife:1.2, dmg:e.wpn.dmg, col:e.wpn.col, sz:e.wpn.sz,
   });
 }
 
@@ -584,6 +590,10 @@ function updEnemies(dt){
     e.fireCd = Math.max(0, e.fireCd - dt);
     e.aiT -= dt;
     if(e.distressT > 0) e.distressT -= dt;
+
+    // HV tumble spin — applied before AI so steering fights against it
+    if(e.spinYaw)  { e.yaw   += e.spinYaw   * dt; e.spinYaw   *= Math.pow(0.05, dt); if(Math.abs(e.spinYaw)   < 0.005) e.spinYaw   = 0; }
+    if(e.spinPitch){ e.pitch += e.spinPitch * dt; e.spinPitch *= Math.pow(0.05, dt); if(Math.abs(e.spinPitch) < 0.005) e.spinPitch = 0; }
 
     // ── DISPATCH BY ROLE ──
     switch(e.aiRole){
@@ -1227,7 +1237,7 @@ function updEnemies(dt){
             G.eBullets.push({
               pos: compOffset,
               vel: v3scale(bDir, 500+Math.random()*100),
-              life: 1.8, dmg, col:wpnCol, sz:2.5,
+              life: 1.8, maxLife:1.8, dmg, col:wpnCol, sz:2.5,
             });
           }
         });

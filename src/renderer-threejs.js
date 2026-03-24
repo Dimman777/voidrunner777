@@ -13,15 +13,20 @@
 //    in its geometry so it distributes correctly around the camera.
 // ═══════════════════════════════════════════════════════════
 
-let _renderer, _scene, _sceneRoot, _camera;
+let _renderer, _scene, _sceneRoot, _camera, _sun;
 
 // Scene object groups (rebuilt per system, live in _sceneRoot)
 let _stationGroup, _pBaseGroup, _planetGroup;
 let _launchZoneObj = null;
 let _starField = null;
 
-// NPC mesh tracking: entity object → THREE.LineSegments
+// NPC mesh tracking: entity object → THREE.Mesh
 const _npcMeshes = new Map();
+
+// Cargo box mesh tracking: box object → THREE.Mesh
+const _cargoMeshes = new Map();
+// 10% of freighter length: scaleM(M_FREIGHT, 8) → Z-extent 4.0 × 8 = 32 → 3.2
+const _CARGO_BOX_SIZE = 3.2;
 
 // Bullet point cloud
 const MAX_BULLETS = 300;
@@ -31,33 +36,91 @@ let _bulletPositions, _bulletColors, _bulletGeo, _bulletPoints;
 const MAX_PARTS = 1500;
 let _partPositions, _partColors, _partGeo, _partPoints;
 
-// Material cache (color string → LineBasicMaterial)
-const _matCache = {};
-function _lineMat(col) {
-  if (!_matCache[col]) {
-    _matCache[col] = new THREE.LineBasicMaterial({ color: new THREE.Color(col) });
+// Material cache (color string → MeshStandardMaterial)
+const _meshMatCache = {};
+function _meshMat(col) {
+  if (!_meshMatCache[col]) {
+    const c = new THREE.Color(col);
+    _meshMatCache[col] = new THREE.MeshStandardMaterial({
+      color: c,
+      emissive: c.clone().multiplyScalar(0.10),
+      metalness: 0.65,
+      roughness: 0.40,
+    });
   }
-  return _matCache[col];
+  return _meshMatCache[col];
 }
 
-// Color cache
+// Color cache (for bullets/particles)
 const _colCache = {};
 function _col(str) {
   if (!_colCache[str]) _colCache[str] = new THREE.Color(str);
   return _colCache[str];
 }
 
-// Convert {verts, edges} wireframe model to LineSegments
-function _modelToLineSegs(model, col) {
+// Build a convex hull BufferGeometry from a flat vert array [[x,y,z], ...].
+// Brute-force O(n³) — fine for these models (≤ 21 verts).
+// No external addons required.
+function _convexHullGeo(verts) {
+  const n = verts.length;
+
+  // Centroid
+  let cx = 0, cy = 0, cz = 0;
+  for (const v of verts) { cx += v[0]; cy += v[1]; cz += v[2]; }
+  cx /= n; cy /= n; cz /= n;
+
   const positions = [];
-  model.edges.forEach(([a, b]) => {
-    const va = model.verts[a], vb = model.verts[b];
-    positions.push(va[0], va[1], va[2]);
-    positions.push(vb[0], vb[1], vb[2]);
-  });
+
+  for (let i = 0; i < n - 2; i++) {
+    for (let j = i + 1; j < n - 1; j++) {
+      for (let k = j + 1; k < n; k++) {
+        const a = verts[i], b = verts[j], c = verts[k];
+        // Edge vectors
+        const abx = b[0]-a[0], aby = b[1]-a[1], abz = b[2]-a[2];
+        const acx = c[0]-a[0], acy = c[1]-a[1], acz = c[2]-a[2];
+        // Face normal = ab × ac
+        const nx = aby*acz - abz*acy;
+        const ny = abz*acx - abx*acz;
+        const nz = abx*acy - aby*acx;
+        if (nx*nx + ny*ny + nz*nz < 1e-10) continue; // degenerate
+
+        // dc > 0 → normal points outward from centroid; < 0 → inward
+        const dc = nx*(a[0]-cx) + ny*(a[1]-cy) + nz*(a[2]-cz);
+        if (Math.abs(dc) < 1e-8) continue; // centroid on plane — skip
+
+        // Hull face: all other verts must be on the centroid's side
+        let isFace = true;
+        for (let m = 0; m < n; m++) {
+          if (m === i || m === j || m === k) continue;
+          const dm = nx*(verts[m][0]-a[0]) + ny*(verts[m][1]-a[1]) + nz*(verts[m][2]-a[2]);
+          // dm must have opposite sign to dc (inward side) or be near-zero (on plane)
+          if (dc > 0 && dm >  1e-6) { isFace = false; break; }
+          if (dc < 0 && dm < -1e-6) { isFace = false; break; }
+        }
+        if (!isFace) continue;
+
+        // Emit triangle; flip winding if normal was pointing inward
+        if (dc > 0) {
+          positions.push(a[0],a[1],a[2], b[0],b[1],b[2], c[0],c[1],c[2]);
+        } else {
+          positions.push(a[0],a[1],a[2], c[0],c[1],c[2], b[0],b[1],b[2]);
+        }
+      }
+    }
+  }
+
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  return new THREE.LineSegments(geo, _lineMat(col));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Convert {verts} model to a solid Mesh.
+// The {verts, edges} data in data-models.js is unchanged and
+// continues to be used by canvas.js for MFD/radar wireframes.
+function _modelToMesh(model, col) {
+  const geo = _convexHullGeo(model.verts);
+  return new THREE.Mesh(geo, _meshMat(col));
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -73,7 +136,7 @@ function initScene() {
   _scene = new THREE.Scene();
 
   // Z-flip root — all game objects live here.
-  // This bridges game +Z-forward to Three.js -Z-forward without touching the camera.
+  // Bridges game +Z-forward to Three.js -Z-forward without touching the camera.
   _sceneRoot = new THREE.Group();
   _sceneRoot.scale.z = -1;
   _scene.add(_sceneRoot);
@@ -81,7 +144,20 @@ function initScene() {
   // FOV matches proj() in renderer.js: Math.PI/2.5 ≈ 72°
   _camera = new THREE.PerspectiveCamera(72, W / H, 0.5, 60000);
 
-  _scene.add(new THREE.AmbientLight(0x334455, 2.0));
+  // Lighting — dim ambient fill + directional sun from upper-right +
+  // a weak backfill so shadowed faces aren't pure black.
+  _scene.add(new THREE.AmbientLight(0x223344, 1.5));
+
+  // Sun position mirrors the 2D renderer: game world (0, 1000, -8000).
+  // In Three.js world space (Z-flipped via _sceneRoot): (0, 1000, 8000).
+  // Color is updated per-system in initSceneForSystem.
+  _sun = new THREE.DirectionalLight(0xffd0a0, 3.0);
+  _sun.position.set(0, 1000, 8000);
+  _scene.add(_sun);
+
+  const fill = new THREE.DirectionalLight(0x334466, 0.8);
+  fill.position.set(-0.8, -0.4, 1.0); // lower-left backfill
+  _scene.add(fill);
 
   // Static groups (go into sceneRoot)
   _stationGroup = new THREE.Group(); _sceneRoot.add(_stationGroup);
@@ -96,7 +172,7 @@ function initScene() {
   _bulletGeo.setAttribute('color',    new THREE.BufferAttribute(_bulletColors,    3).setUsage(THREE.DynamicDrawUsage));
   _bulletGeo.setDrawRange(0, 0);
   _bulletPoints = new THREE.Points(_bulletGeo, new THREE.PointsMaterial({
-    size: 5, vertexColors: true, sizeAttenuation: false,
+    size: 1.5, vertexColors: true, sizeAttenuation: true,
   }));
   _bulletPoints.frustumCulled = false;
   _sceneRoot.add(_bulletPoints);
@@ -125,6 +201,11 @@ function initScene() {
 //  PER-SYSTEM BUILD — call after G is ready (init / loadSystem)
 // ═══════════════════════════════════════════════════════════
 function initSceneForSystem(G) {
+  // Update sun direction and color to match the current system's star.
+  // The 2D renderer places the sun at game world (0, 1000, -8000);
+  // Three.js world space flips Z → (0, 1000, 8000).
+  _sun.color.set(SYS[G.sys].starCol);
+
   // Clear stations
   while (_stationGroup.children.length) {
     const c = _stationGroup.children[0];
@@ -137,7 +218,7 @@ function initSceneForSystem(G) {
     c.geometry.dispose();
     _pBaseGroup.remove(c);
   }
-  // Clear planets
+  // Clear planets (each planet creates its own material — dispose it)
   while (_planetGroup.children.length) {
     const c = _planetGroup.children[0];
     if (c.geometry) c.geometry.dispose();
@@ -151,58 +232,67 @@ function initSceneForSystem(G) {
     _launchZoneObj = null;
   }
   // Clear NPC meshes (enemies array was wiped by loadSystem)
-  for (const [, obj] of _npcMeshes) {
-    obj.geometry.dispose();
-    _sceneRoot.remove(obj);
+  for (const [, mesh] of _npcMeshes) {
+    mesh.geometry.dispose();
+    _sceneRoot.remove(mesh);
   }
   _npcMeshes.clear();
 
+  // Clear cargo box meshes
+  for (const [, mesh] of _cargoMeshes) {
+    mesh.geometry.dispose();
+    _sceneRoot.remove(mesh);
+  }
+  _cargoMeshes.clear();
+
   // Star field lives in _scene, not _sceneRoot, to avoid double Z-flip.
-  // Star geometry positions have Z negated so they distribute correctly
-  // around the camera which is in Three.js world space (+Z is behind).
   _buildStarField(G);
 
-  // Stations (positions in _sceneRoot space = game world positions)
+  // Stations
   G.stations.forEach(st => {
-    const ls = _modelToLineSegs(st.model, st.col);
-    ls.position.set(st.pos.x, st.pos.y, st.pos.z);
-    ls.userData.entity = st;
-    _stationGroup.add(ls);
+    const mesh = _modelToMesh(st.model, st.col);
+    mesh.position.set(st.pos.x, st.pos.y, st.pos.z);
+    mesh.userData.entity = st;
+    _stationGroup.add(mesh);
   });
 
   // Pirate bases
   G.pBases.forEach(pb => {
-    const ls = _modelToLineSegs(pb.model, pb.col);
-    ls.position.set(pb.pos.x, pb.pos.y, pb.pos.z);
-    ls.userData.entity = pb;
-    _pBaseGroup.add(ls);
+    const mesh = _modelToMesh(pb.model, pb.col);
+    mesh.position.set(pb.pos.x, pb.pos.y, pb.pos.z);
+    mesh.userData.entity = pb;
+    _pBaseGroup.add(mesh);
   });
 
   // Launch zone
   if (G.launchZone) {
-    _launchZoneObj = _modelToLineSegs(G.launchZone.model, '#50c8ff');
+    _launchZoneObj = _modelToMesh(G.launchZone.model, '#50c8ff');
     _launchZoneObj.position.set(G.launchZone.pos.x, G.launchZone.pos.y, G.launchZone.pos.z);
     _launchZoneObj.userData.entity = G.launchZone;
     _sceneRoot.add(_launchZoneObj);
   }
 
-  // Planets
+  // Planets — solid sphere with MeshStandardMaterial + atmosphere glow shell
   G.planets.forEach(pl => {
-    // Wireframe sphere
-    const sphereGeo = new THREE.SphereGeometry(pl.r, 14, 9);
-    const wireGeo   = new THREE.WireframeGeometry(sphereGeo);
-    sphereGeo.dispose();
-    const wf = new THREE.LineSegments(wireGeo, new THREE.LineBasicMaterial({
-      color: _col(pl.col), transparent: true, opacity: 0.22,
-    }));
-    wf.position.set(pl.pos.x, pl.pos.y, pl.pos.z);
-    _planetGroup.add(wf);
+    const col = new THREE.Color(pl.col);
 
-    // Faint glow shell
-    const glowGeo = new THREE.SphereGeometry(pl.r * 1.18, 8, 6);
+    const geo = new THREE.SphereGeometry(pl.r, 48, 32);
+    const mat = new THREE.MeshStandardMaterial({
+      color: col,
+      emissive: col.clone().multiplyScalar(0.12),
+      metalness: 0.0,
+      roughness: 0.85,
+    });
+    const sphere = new THREE.Mesh(geo, mat);
+    sphere.position.set(pl.pos.x, pl.pos.y, pl.pos.z);
+    _planetGroup.add(sphere);
+
+    // Atmosphere shell — BackSide so it's visible from outside
+    const glowGeo = new THREE.SphereGeometry(pl.r * 1.08, 24, 16);
     const glowMat = new THREE.MeshBasicMaterial({
-      color: _col(pl.col), transparent: true, opacity: 0.04,
-      side: THREE.DoubleSide,
+      color: col,
+      transparent: true, opacity: 0.10,
+      side: THREE.BackSide,
     });
     const glow = new THREE.Mesh(glowGeo, glowMat);
     glow.position.set(pl.pos.x, pl.pos.y, pl.pos.z);
@@ -236,41 +326,31 @@ function drawFrame(G, dt) {
   if (!G || !_renderer) return;
   const p = G.p;
 
-  // Camera Z is negated to match sceneRoot Z-flip (objects live at world -z_game).
-  // Camera quaternion derivation: q_cam = conj(M * conj(p.ori) * M), M=diag(1,1,-1).
-  // M conjugation negates rotations around X and Y axes, preserves Z:
-  //   M·Rx(α)·M = Rx(-α)  →  negate x component
-  //   M·Ry(θ)·M = Ry(-θ)  →  negate y component
-  //   M·Rz(φ)·M = Rz(φ)   →  keep z component
-  // Result: q_cam = (w, -x, -y, z)
-  // THREE.Quaternion.set(x, y, z, w).
+  // Camera Z negated to match sceneRoot Z-flip.
+  // Quaternion derivation: q_cam = (w, -x, -y, z) — see coordinate bridge comment at top.
   _camera.position.set(p.pos.x, p.pos.y, -p.pos.z);
   _camera.quaternion.set(-p.ori.x, -p.ori.y, p.ori.z, p.ori.w);
 
-  // Star field follows camera in world space (Z negated to match camera)
+  // Star field follows camera in world space
   if (_starField) _starField.position.set(p.pos.x, p.pos.y, -p.pos.z);
 
   // Rotate stations & bases
-  _stationGroup.children.forEach(ls => {
-    const st = ls.userData.entity;
-    if (st) ls.rotation.y = st.rAngle || 0;
+  _stationGroup.children.forEach(mesh => {
+    const st = mesh.userData.entity;
+    if (st) mesh.rotation.y = st.rAngle || 0;
   });
-  _pBaseGroup.children.forEach(ls => {
-    const pb = ls.userData.entity;
-    if (pb) ls.rotation.y = pb.rAngle || 0;
+  _pBaseGroup.children.forEach(mesh => {
+    const pb = mesh.userData.entity;
+    if (pb) mesh.rotation.y = pb.rAngle || 0;
   });
   if (_launchZoneObj && G.launchZone) {
     G.launchZone.rAngle = (G.launchZone.rAngle || 0) + 0.3 * (dt || 0.016);
     _launchZoneObj.rotation.y = G.launchZone.rAngle;
   }
 
-  // NPC wireframes
   _syncNPCs(G);
-
-  // Bullets (player + enemy combined)
+  _syncCargos(G);
   _syncBullets(G);
-
-  // Particles
   _syncParticles(G);
 
   _renderer.render(_scene, _camera);
@@ -281,10 +361,10 @@ function _syncNPCs(G) {
   const currentSet = new Set(G.enemies);
 
   // Remove meshes for enemies no longer in the array
-  for (const [entity, ls] of _npcMeshes) {
+  for (const [entity, mesh] of _npcMeshes) {
     if (!currentSet.has(entity)) {
-      ls.geometry.dispose();
-      _sceneRoot.remove(ls);
+      mesh.geometry.dispose();
+      _sceneRoot.remove(mesh);
       _npcMeshes.delete(entity);
     }
   }
@@ -292,17 +372,45 @@ function _syncNPCs(G) {
   // Create or update mesh for each active enemy
   G.enemies.forEach(e => {
     if (!_npcMeshes.has(e)) {
-      const ls = _modelToLineSegs(e.model, e.col);
-      _sceneRoot.add(ls);
-      _npcMeshes.set(e, ls);
+      const mesh = _modelToMesh(e.model, e.col);
+      _sceneRoot.add(mesh);
+      _npcMeshes.set(e, mesh);
     }
-    const ls = _npcMeshes.get(e);
-    ls.position.set(e.pos.x, e.pos.y, e.pos.z);
+    const mesh = _npcMeshes.get(e);
+    mesh.position.set(e.pos.x, e.pos.y, e.pos.z);
     // YXZ order: yaw (Y) applied before pitch (X), matching eRotY then eRotX
-    ls.rotation.order = 'YXZ';
-    ls.rotation.y = e.yaw   || 0;
-    ls.rotation.x = e.pitch || 0;
-    ls.visible = e.struct > 0;
+    mesh.rotation.order = 'YXZ';
+    mesh.rotation.y = e.yaw   || 0;
+    mesh.rotation.x = e.pitch || 0;
+    mesh.visible = e.struct > 0;
+  });
+}
+
+// ── CARGO BOX SYNC ──
+function _syncCargos(G) {
+  const currentSet = new Set(G.cargoBoxes);
+
+  for (const [box, mesh] of _cargoMeshes) {
+    if (!currentSet.has(box)) {
+      mesh.geometry.dispose();
+      _sceneRoot.remove(mesh);
+      _cargoMeshes.delete(box);
+    }
+  }
+
+  G.cargoBoxes.forEach(box => {
+    if (!_cargoMeshes.has(box)) {
+      const geo = new THREE.BoxGeometry(_CARGO_BOX_SIZE, _CARGO_BOX_SIZE, _CARGO_BOX_SIZE);
+      const mesh = new THREE.Mesh(geo, _meshMat('#88ff44'));
+      _sceneRoot.add(mesh);
+      _cargoMeshes.set(box, mesh);
+    }
+    const mesh = _cargoMeshes.get(box);
+    mesh.position.set(box.pos.x, box.pos.y, box.pos.z);
+    // Multi-axis tumble derived from the single box.angle value
+    mesh.rotation.y = box.angle;
+    mesh.rotation.x = box.angle * 0.7;
+    mesh.rotation.z = box.angle * 0.4;
   });
 }
 
@@ -316,7 +424,8 @@ function _syncBullets(G) {
     _bulletPositions[i * 3 + 1] = b.pos.y;
     _bulletPositions[i * 3 + 2] = b.pos.z;
     const c = _col(b.col);
-    const a = Math.min(1, b.life * 3);
+    // Fade starts at midpoint of travel; full brightness for first half
+    const a = b.maxLife ? Math.min(1, b.life / b.maxLife * 2) : Math.min(1, b.life * 3);
     _bulletColors[i * 3]     = c.r * a;
     _bulletColors[i * 3 + 1] = c.g * a;
     _bulletColors[i * 3 + 2] = c.b * a;

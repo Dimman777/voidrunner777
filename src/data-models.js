@@ -155,6 +155,19 @@ function mkDreadnought(){
 
 const M_FRIGATE=mkFrigate(), M_DREADNOUGHT=mkDreadnought();
 
+// Unit cube wireframe — used in cargo MFD
+function mkCargoBox(){
+  return { verts:[
+    [-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],  // back  0-3
+    [-1,-1, 1],[1,-1, 1],[1,1, 1],[-1,1, 1],  // front 4-7
+  ], edges:[
+    [0,1],[1,2],[2,3],[3,0],  // back face
+    [4,5],[5,6],[6,7],[7,4],  // front face
+    [0,4],[1,5],[2,6],[3,7],  // sides
+  ]};
+}
+const M_CARGO_BOX = mkCargoBox();
+
 // §8 Capital ship definitions
 const CAP_DEFS = {
   frigate: {

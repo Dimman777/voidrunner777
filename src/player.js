@@ -58,16 +58,38 @@ document.addEventListener('keydown',e=>{
     }
   }
 
-  // N — cycle nav through destinations
+  // N — cycle nav through destinations (clears cargo target)
   if(e.key.toLowerCase()==='n'){
+    G.cargoTarget = null;
     const navList = getNavList();
     if(navList.length===0){ G.navIdx=-1; G.navTarget=null; return; }
     G.navIdx = (G.navIdx+1) % navList.length;
     G.navTarget = navList[G.navIdx];
   }
+
+  // C — target cargo box nearest to crosshair (like T for enemies)
+  if(e.key.toLowerCase()==='c'){
+    if(G.cargoTarget){ G.cargoTarget=null; return; }  // toggle off
+    if(!G.cargoBoxes.length) return;
+    const pFwd=qFwd(G.p.ori);
+    let bestDot=-Infinity, best=null;
+    G.cargoBoxes.forEach(box=>{
+      const toBox=v3norm(v3sub(box.pos,G.p.pos));
+      const dot=v3dot(pFwd,toBox);
+      if(dot>bestDot){ bestDot=dot; best=box; }
+    });
+    if(best){ G.cargoTarget=best; G.navIdx=-1; G.navTarget=null; }
+  }
 });
 document.addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false;});
-document.addEventListener('mousemove',e=>{mX=e.clientX;mY=e.clientY;});
+document.addEventListener('mousemove',e=>{
+  let x=e.clientX, y=e.clientY;
+  if(G&&!G.dead&&G.mode==='space'){
+    const r=H*0.375, dx=x-CX, dy=y-CY, d=Math.sqrt(dx*dx+dy*dy);
+    if(d>r){ x=CX+dx*r/d; y=CY+dy*r/d; }
+  }
+  mX=x; mY=y;
+});
 document.addEventListener('mousedown',()=>{mDown=true;});
 document.addEventListener('mouseup',()=>{mDown=false;});
 document.addEventListener('contextmenu',e=>e.preventDefault());
@@ -81,17 +103,21 @@ function update(dt){
   G.time+=dt;
 
   // ── MOUSE → SHIP NOSE ──
-  // Mouse offset from center controls turn rate.
-  // mX/mY are null until first mouse move — treat as screen center (zero offset).
-  const halfW=W*.45, halfH=H*.45;
-  const mx = mX===null ? 0 : Math.max(-1,Math.min(1,(mX-CX)/halfW));
-  const my = mY===null ? 0 : Math.max(-1,Math.min(1,(mY-CY)/halfH));
+  // Radial normalization against the ring radius so the visual ring maps
+  // directly to input: perimeter = max rate, arc ticks (50%) = half rate, center = zero.
+  const ringR = H * 0.375;
+  const rdx = mX === null ? 0 : mX - CX;
+  const rdy = mY === null ? 0 : mY - CY;
+  const dist = Math.sqrt(rdx*rdx + rdy*rdy);
+  const norm = dist < 0.5 ? 0 : Math.min(1, dist / ringR);
+  const mx = dist > 0.5 ? (rdx / dist) * norm : 0;
+  const my = dist > 0.5 ? (rdy / dist) * norm : 0;
 
-  // Non-linear: squared for fine control near center
-  // Yaw rate = HALF of pitch rate for proper space-sim feel
-  const yawRate  =  mx * Math.abs(mx) * p.turnRate * 0.5;
-  const pitchMul = invertPitch ? 1 : -1;  // default (airplane): mouse-down = pitch up (positive my)
-  const pitchRate= pitchMul * my * Math.abs(my) * p.turnRate;
+  // Linear rate — 50% distance = 50% turn rate, matching the arc tick markers.
+  // Yaw rate = HALF of pitch rate for proper space-sim feel.
+  const yawRate  = mx * p.turnRate * 0.5;
+  const pitchMul = invertPitch ? 1 : -1;
+  const pitchRate = pitchMul * my * p.turnRate;
 
   // A/D keys = roll (same rate as pitch)
   let rollInput = 0;
@@ -186,18 +212,20 @@ function update(dt){
       hp.fireCd = w.cd;
 
       if(w.type === 'ballistic'){
+        const life = w.range / w.velocity;
         G.bullets.push({
           pos: v3add(p.pos, v3scale(fwd, 12)),
           vel: v3add(v3scale(fwd, w.velocity), v3scale(p.vel, .5)),
-          life: w.range / w.velocity,
+          life, maxLife: life,
           dmgA: w.dmgA, dmgS: w.dmgS, impact: w.impact||0,
           col: w.col, sz: 2,
         });
       } else if(w.type === 'hypervelocity'){
+        const life = w.range / w.velocity;
         G.bullets.push({
           pos: v3add(p.pos, v3scale(fwd, 12)),
           vel: v3add(v3scale(fwd, w.velocity), v3scale(p.vel, .3)),
-          life: w.range / w.velocity,
+          life, maxLife: life,
           dmgA: w.dmgA, dmgS: w.dmgS, impact: w.impact||0,
           col: w.col, sz: 3, isHV: true,
         });
@@ -353,6 +381,7 @@ function update(dt){
   // Death
   if(p.struct<=0&&!G.dead){
     G.dead=true;running=false;
+    document.getElementById('mouse-ring').style.display='none';
     for(let i=0;i<60;i++){
       const a=Math.random()*PI2,b=(Math.random()-.5)*PI,sp=50+Math.random()*300;
       G.parts.push({pos:{...p.pos},
