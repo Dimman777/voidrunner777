@@ -55,7 +55,7 @@ function init(){
       // Status
       outlaw:false, outlawTimer:0, friendlyHits:0,
     },
-    stations:s.stations.map(st=>({...st,model:scaleM(M_STATION,12),rAngle:0,dockR:220})),
+    stations:s.stations.map(st=>({...st,model:scaleM(M_STATION,12),rAngle:0,dockR:220,landingZones:buildLandingZones(st.pos)})),
     pBases:s.pBases.map(pb=>({...pb,model:scaleM(M_PBASE,15),rAngle:Math.random()*PI2})),
     launchZone:s.launchZone ? {...s.launchZone,model:scaleM(M_STATION,6),rAngle:0} : null,
     planets:s.planets,
@@ -103,6 +103,11 @@ function init(){
   });
   // 1 corporate security per station
   G.stations.forEach(st=>{ spawnNPC('corporate',null,st); });
+  // Merchant Guild recovery ship at each lawful station
+  G.stations.forEach(st=>{
+    if(FACTIONS[st.factionId]?.cat !== 'criminal')
+      spawnNPC('recovery', FACTIONS['f05']?.col||'#44cc88', st, null, null);
+  });
   // 3 merc patrols
   for(let i=0;i<3;i++) spawnNPC('merc');
 
@@ -110,6 +115,31 @@ function init(){
 }
 
 function pickStation(){ return G.stations[Math.floor(Math.random()*G.stations.length)]; }
+
+const _LZ_CUBE = (function(){
+  const s=14;
+  return {
+    verts:[[-s,-s,-s],[s,-s,-s],[s,s,-s],[-s,s,-s],
+           [-s,-s, s],[s,-s, s],[s,s, s],[-s,s, s]],
+    edges:[[0,1],[1,2],[2,3],[3,0],   // back face
+           [4,5],[5,6],[6,7],[7,4],   // front face
+           [0,4],[1,5],[2,6],[3,7]],  // pillars
+  };
+})();
+
+function buildLandingZones(stPos){
+  const lzs=[];
+  for(let i=0;i<6;i++){
+    const a=(i/6)*PI2;
+    const yOff=(i%2===0?1:-1)*30;
+    lzs.push({
+      pos:v3add(stPos,v3(Math.cos(a)*220,yOff,Math.sin(a)*220)),
+      model:_LZ_CUBE,
+      rAngle:Math.random()*PI2,
+    });
+  }
+  return lzs;
+}
 
 // Nav target list: stations + pirate bases + launch zone
 function getNavList(){
@@ -293,7 +323,7 @@ function loadSystem(sysKey){
   G.mode='space';
 
   // Rebuild world objects for new system
-  G.stations=s.stations.map(st=>({...st,model:scaleM(M_STATION,12),rAngle:0,dockR:220}));
+  G.stations=s.stations.map(st=>({...st,model:scaleM(M_STATION,12),rAngle:0,dockR:220,landingZones:buildLandingZones(st.pos)}));
   G.pBases=s.pBases.map(pb=>({...pb,model:scaleM(M_PBASE,15),rAngle:Math.random()*PI2}));
   G.launchZone=s.launchZone ? {...s.launchZone,model:scaleM(M_STATION,6),rAngle:0} : null;
   G.planets=s.planets;
@@ -328,6 +358,11 @@ function loadSystem(sysKey){
     if(Math.random() < 0.65) spawnCapital(pb);
   });
   G.stations.forEach(st=>{ spawnNPC('corporate',null,st); });
+  // Merchant Guild recovery ship at each lawful station
+  G.stations.forEach(st=>{
+    if(FACTIONS[st.factionId]?.cat !== 'criminal')
+      spawnNPC('recovery', FACTIONS['f05']?.col||'#44cc88', st, null, null);
+  });
   for(let i=0;i<3;i++) spawnNPC('merc');
 
   initSceneForSystem(G);
@@ -337,10 +372,56 @@ function loadSystem(sysKey){
 // ═══════════════════════════════════════════════════════════
 //  LOOP
 // ═══════════════════════════════════════════════════════════
+// ─── DEBUG PANEL ─────────────────────────────────────────────
+let _debugVisible = false;
+function toggleDebugPanel(){
+  _debugVisible = !_debugVisible;
+  document.getElementById('debug-panel').style.display = _debugVisible ? 'block' : 'none';
+}
+function updateDebugPanel(){
+  if(!_debugVisible || !G) return;
+  const el = document.getElementById('debug-factions');
+  if(!el) return;
+  let html = '';
+  allFactions().forEach(f=>{
+    if(!f.flags.active) return;
+    const cfg  = factionEconCfg(f.id);
+    const pwr  = factionPower(f.id);
+    const ctrl = Math.max(1, factionControl(f.id));
+    const assets = f.assets || 0;
+    const pBar  = Math.min(100, Math.round(pwr  / ctrl  * 100));
+    const aBar  = Math.min(100, Math.round(assets / 250  * 100));
+    const eBar  = Math.round(f.econ);
+    const sBar  = Math.round(f.str);
+    html += `<div class="dbg-faction">
+      <div class="dbg-name" style="color:${f.col}">${f.name} <span style="opacity:0.4">[${f.cat}]</span></div>
+      <div class="dbg-bars">
+        <div class="dbg-bar-row"><span class="dbg-bar-label">ASSETS</span>
+          <div class="dbg-bar-outer"><div class="dbg-bar-fill" style="width:${aBar}%;background:#ffaa44;"></div></div>
+          <span class="dbg-bar-val">${Math.round(assets)}</span></div>
+        <div class="dbg-bar-row"><span class="dbg-bar-label">POWER</span>
+          <div class="dbg-bar-outer"><div class="dbg-bar-fill" style="width:${pBar}%;background:#44ffcc;"></div></div>
+          <span class="dbg-bar-val">${pwr}/${ctrl}</span></div>
+        <div class="dbg-bar-row"><span class="dbg-bar-label">ECON</span>
+          <div class="dbg-bar-outer"><div class="dbg-bar-fill" style="width:${eBar}%;background:#88aaff;"></div></div>
+          <span class="dbg-bar-val">${eBar}</span></div>
+        <div class="dbg-bar-row"><span class="dbg-bar-label">STR</span>
+          <div class="dbg-bar-outer"><div class="dbg-bar-fill" style="width:${sBar}%;background:#ff6666;"></div></div>
+          <span class="dbg-bar-val">${sBar}</span></div>
+      </div>
+      <div style="opacity:0.35;margin-top:2px;font-size:7px">
+        COST ${cfg.shipCost} · CAP ${cfg.capitalCost} · INC ${cfg.passiveIncome}/30s · SPAWN ${cfg.spawnInterval}s · CTRL ${cfg.controlBase}base
+        ${f._bountyActive?'· <span style="color:#ff4444">BOUNTY ACTIVE</span>':''}
+      </div>
+    </div>`;
+  });
+  el.innerHTML = html || '<div style="opacity:0.4">No active factions</div>';
+}
+
 function loop(ts){
   const dt=Math.min(.05,(ts-lastT)/1000); lastT=ts;
   try {
-    if(G&&!G.dead){update(dt);updHUD();}
+    if(G&&!G.dead){update(dt);updHUD();updateDebugPanel();}
     drawFrame(G, dt);
     drawHUD();
   } catch(err) {

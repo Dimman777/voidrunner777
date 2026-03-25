@@ -8,6 +8,7 @@ let keys={}, mX=null, mY=null, mDown=false;
 // ═══════════════════════════════════════════════════════════
 document.addEventListener('keydown',e=>{
   keys[e.key.toLowerCase()]=true;
+  sndInit(); // unlock AudioContext on first key press
   if(!G||G.dead||G.mode!=='space') return;
   if(e.key.toLowerCase()==='q' && G?.p) cycleWeaponGroup(G.p);
   if(e.key.toLowerCase()==='e' && G.nearSt) dock(G.nearSt);
@@ -43,7 +44,7 @@ document.addEventListener('keydown',e=>{
       if(G.locked){
         // Locking is a hostile act — make target aware
         const t=G.targetShip;
-        if(t.aiRole==='pirate'||t.aiRole==='merc'){ t.hostile=true; t.aiSt='chase'; }
+        if(t.aiRole==='merc'){ t.hostile=true; t.aiSt='chase'; } // mercs react to being locked
         if(t.aiRole==='cargo'){ t.aiSt='flee'; t._attacker=G.p.pos; }
         if(t.aiRole==='militia'||t.aiRole==='corporate'){
           G.p.friendlyHits++;
@@ -90,7 +91,7 @@ document.addEventListener('mousemove',e=>{
   }
   mX=x; mY=y;
 });
-document.addEventListener('mousedown',()=>{mDown=true;});
+document.addEventListener('mousedown',()=>{mDown=true; sndInit();});
 document.addEventListener('mouseup',()=>{mDown=false;});
 document.addEventListener('contextmenu',e=>e.preventDefault());
 
@@ -98,7 +99,7 @@ document.addEventListener('contextmenu',e=>e.preventDefault());
 //  UPDATE — NEWTONIAN FLIGHT MODEL
 // ═══════════════════════════════════════════════════════════
 function update(dt){
-  if(!running||G.dead||G.mode!=='space') return;
+  if(!running||G.dead||G.mode!=='space'){ sndEngineUpdate(false,false); sndAtmoDangerUpdate(false); return; }
   const p=G.p;
   G.time+=dt;
 
@@ -136,6 +137,16 @@ function update(dt){
     p.ori = qNorm(qMul(qFromAxisAngle(qFwd(p.ori), rollRate*dt), p.ori));
   }
   p.ori = qNorm(p.ori); // keep clean
+
+  // ── COLLISION SPIN ──
+  if(p._spinYaw && Math.abs(p._spinYaw)>0.001){
+    p.ori=qNorm(qMul(qFromAxisAngle(qUp(p.ori),p._spinYaw*dt),p.ori));
+    p._spinYaw*=Math.pow(0.96,dt*60);
+  }
+  if(p._spinPitch && Math.abs(p._spinPitch)>0.001){
+    p.ori=qNorm(qMul(qFromAxisAngle(qRight(p.ori),p._spinPitch*dt),p.ori));
+    p._spinPitch*=Math.pow(0.96,dt*60);
+  }
 
   // Visual cockpit — no roll, keep HUD stable
   p.roll = 0;
@@ -183,6 +194,39 @@ function update(dt){
     }
   }
 
+  // ── SOUND HOLD TIMERS ──
+  // Each input accumulates hold time; volume derived from that, with onset delays and ramps.
+  if(!p._wHoldT)     p._wHoldT     = 0;  // W thrust
+  if(!p._sHoldT)     p._sHoldT     = 0;  // S brake
+  if(!p._adHoldT)    p._adHoldT    = 0;  // A/D roll
+  if(!p._mRotHoldT)  p._mRotHoldT  = 0;  // mouse rotation
+
+  const isThrusting = keys['w'] && p.fuel > 0;
+  const isBraking   = keys['s'] && v3len(p.vel) > 1;
+  const isAD        = !!(keys['a'] || keys['d']);
+  const mouseNorm   = Math.min(1, dist / ringR);           // 0..1 across ring
+  const mouseOverHalf = mouseNorm > 0.5;
+
+  if(isThrusting)    p._wHoldT    += dt; else p._wHoldT    = 0;
+  if(isBraking)      p._sHoldT    += dt; else p._sHoldT    = 0;
+  if(isAD)           p._adHoldT   += dt; else p._adHoldT   = 0;
+  if(mouseOverHalf)  p._mRotHoldT += dt; else p._mRotHoldT = 0;
+
+  // Engine: no delay, ramps to full over 2 s
+  const engVol  = isThrusting ? Math.min(1, p._wHoldT / 2.0) : 0;
+  sndEngineUpdate(isThrusting, boost, engVol);
+
+  // Brake: 0.5 s delay, 1.5 s ramp
+  const brkVol  = isBraking ? Math.min(1, Math.max(0, (p._sHoldT - 0.5) / 1.5)) : 0;
+  sndBrakeUpdate(brkVol, isBraking);
+
+  // RCS: A/D needs 1 s hold then 3 s ramp; mouse needs >50% and 3 s ramp,
+  //       scaled by how far past 50% the mouse is.
+  const rcsADVol    = isAD          ? Math.min(1, Math.max(0, (p._adHoldT   - 1.0) / 3.0)) : 0;
+  const rcsMouseVol = mouseOverHalf ? Math.min(1, p._mRotHoldT / 3.0) * Math.min(1, (mouseNorm - 0.5) * 2) : 0;
+  const rcsVol      = Math.max(rcsADVol, rcsMouseVol);
+  sndRCSUpdate(rcsVol, isAD || mouseOverHalf);
+
   const spd=v3len(p.vel);
   const effectiveMaxSpd = boost ? p.maxSpd * 1.5 : p.maxSpd;
   if(spd>effectiveMaxSpd) p.vel=v3scale(v3norm(p.vel),effectiveMaxSpd);
@@ -204,6 +248,10 @@ function update(dt){
     }
   });
 
+  // Ballistic spread heat — builds while firing, decays when trigger released
+  if(!p._spreadHeat) p._spreadHeat = 0;
+  if(!mDown) p._spreadHeat = Math.max(0, p._spreadHeat - 2.5 * dt);
+
   if(mDown){
     const activeHPs = p.hardpoints.filter(hp => hp.weapon && hp.weapon.type === p.activeGroup);
     activeHPs.forEach(hp => {
@@ -212,14 +260,24 @@ function update(dt){
       hp.fireCd = w.cd;
 
       if(w.type === 'ballistic'){
+        // Spread cone — max 15° (Math.PI/12), builds over ~10 shots, decays quickly on release
+        p._spreadHeat = Math.min(1, p._spreadHeat + 0.09);
+        const spreadAngle = p._spreadHeat * (Math.PI / 120); // max ~1.5°
+        const spreadMag = Math.tan(spreadAngle);
+        const right = qRight(p.ori), up = qUp(p.ori);
+        const az = Math.random() * PI2;
+        const spreadFwd = v3norm(v3add(fwd,
+          v3add(v3scale(right, Math.cos(az) * spreadMag),
+                v3scale(up,    Math.sin(az) * spreadMag))));
         const life = w.range / w.velocity;
         G.bullets.push({
           pos: v3add(p.pos, v3scale(fwd, 12)),
-          vel: v3add(v3scale(fwd, w.velocity), v3scale(p.vel, .5)),
+          vel: v3add(v3scale(spreadFwd, w.velocity), v3scale(p.vel, .5)),
           life, maxLife: life,
           dmgA: w.dmgA, dmgS: w.dmgS, impact: w.impact||0,
           col: w.col, sz: 2,
         });
+        sndAutocannon();
       } else if(w.type === 'hypervelocity'){
         const life = w.range / w.velocity;
         G.bullets.push({
@@ -229,10 +287,12 @@ function update(dt){
           dmgA: w.dmgA, dmgS: w.dmgS, impact: w.impact||0,
           col: w.col, sz: 3, isHV: true,
         });
+        sndHypervelocity();
       } else if(w.type === 'laser'){
         // Laser: set beam active on this hardpoint for beamDur
         hp.laserBeam = { timer: w.beamDur, totalDmgA: w.dmgA, totalDmgS: w.dmgS, range: w.range, col: w.col };
         hp.fireCd = w.beamDur + w.cd; // can't fire again until beam finishes + cooldown
+        sndLaser();
       }
     });
   }
@@ -255,18 +315,27 @@ function update(dt){
       if(perp < e.sz * 1.5){
         damageNPC(e, (dpsA + dpsS) * dt);
         if(e.struct <= 0){ eDeath(e); }
-        else if(e.aiRole==='pirate'||e.aiRole==='merc') { e.hostile=true; e.aiSt='chase'; }
+        else if(e.aiRole==='pirate'){
+          const isLocked = G.targetShip===e && G.locked;
+          const hasBounty = (FACTIONS[e.factionId]?.playerRep||0) < -30;
+          const aggroChance = isLocked ? (hasBounty ? 0.80 : 0.40) : 0.15;
+          if(Math.random() < aggroChance){ e.hostile=true; e.aiSt='chase'; }
+        } else if(e.aiRole==='merc') { e.hostile=true; e.aiSt='chase'; }
         else if(e.aiRole==='cargo') { e.aiSt='flee'; e._attacker={...p.pos}; broadcastDistress(e, AI_CFG.cargo.distressRange); }
       }
     });
   });
 
-  // ── STATION PROXIMITY ──
+  // ── STATION PROXIMITY via LANDING ZONES ──
   G.nearSt=null;
-  let cd=Infinity;
   G.stations.forEach(st=>{
-    const d=v3len(v3sub(st.pos,p.pos));
-    if(d<st.dockR&&d<cd){cd=d;G.nearSt=st;}
+    if(st.landingZones){
+      for(const lz of st.landingZones){
+        if(v3len(v3sub(lz.pos,p.pos))<80){ G.nearSt=st; break; }
+      }
+    } else {
+      if(v3len(v3sub(st.pos,p.pos))<st.dockR) G.nearSt=st;
+    }
   });
   document.getElementById('dock-prompt').style.display=G.nearSt?'block':'none';
   if(G.nearSt){
@@ -283,6 +352,55 @@ function update(dt){
     document.getElementById('dock-prompt').style.display='block';
     document.getElementById('dock-prompt').textContent='[ M ] STAR MAP';
   }
+
+  // ── PLANET ATMOSPHERE & COLLISION ──
+  G._atmoDanger=false;
+  G.planets?.forEach(pl=>{
+    const d=v3len(v3sub(pl.pos,p.pos));
+    const atmoR=pl.r*1.08;
+    if(d<atmoR*2.5) G._atmoDanger=true;
+    if(d<atmoR){
+      const normal=v3norm(v3sub(p.pos,pl.pos));
+      const vDotN=v3dot(p.vel,normal);
+      if(vDotN<0){
+        const retention=0.25+Math.random()*0.25;
+        p.vel=v3add(p.vel,v3scale(normal,-vDotN*(1+retention)));
+        const spd=Math.abs(vDotN);
+        const dmg=Math.min(100,spd*0.3);
+        p.armour=Math.max(0,p.armour-dmg*0.6);
+        p.struct-=dmg*0.4;
+        if(!p._spinYaw) p._spinYaw=0; if(!p._spinPitch) p._spinPitch=0;
+        p._spinYaw+=(Math.random()-.5)*2.5;
+        p._spinPitch+=(Math.random()-.5)*2.5;
+        sndCollisionPlanet(spd);
+        flash('HULL BREACH — COLLISION DAMAGE');
+      }
+    }
+  });
+
+  sndAtmoDangerUpdate(G._atmoDanger);
+
+  // ── STATION COLLISION ──
+  G.stations.forEach(st=>{
+    const d=v3len(v3sub(st.pos,p.pos));
+    if(d<80){
+      const normal=v3norm(v3sub(p.pos,st.pos));
+      const vDotN=v3dot(p.vel,normal);
+      if(vDotN<0){
+        const retention=0.25+Math.random()*0.25;
+        p.vel=v3add(p.vel,v3scale(normal,-vDotN*(1+retention)));
+        const spd=Math.abs(vDotN);
+        const dmg=Math.min(100,spd*0.5);
+        p.armour=Math.max(0,p.armour-dmg*0.6);
+        p.struct-=dmg*0.4;
+        if(!p._spinYaw) p._spinYaw=0; if(!p._spinPitch) p._spinPitch=0;
+        p._spinYaw+=(Math.random()-.5)*3;
+        p._spinPitch+=(Math.random()-.5)*3;
+        sndCollisionStation(spd);
+        flash('HULL BREACH — COLLISION DAMAGE');
+      }
+    }
+  });
 
   // ── §3 OUTLAW SYSTEM ──
   if(p.outlaw){
@@ -304,13 +422,17 @@ function update(dt){
   updateMissions(dt);
 
   // ── FACTION TICKS ──
+  econTick(dt);
   fastTickT+=dt;
   if(fastTickT>=45){ fastTickT=0; fastTick(); }
   slowTickT+=dt;
   if(slowTickT>=300){ slowTickT=0; slowTick(); }
 
   // Rotate world objects
-  G.stations.forEach(st=>{st.rAngle+=.15*dt;});
+  G.stations.forEach(st=>{
+    st.rAngle+=.15*dt;
+    st.landingZones?.forEach(lz=>{lz.rAngle+=.12*dt;});
+  });
   G.pBases.forEach(pb=>{pb.rAngle+=.08*dt;});
 
   // Bullets
@@ -378,9 +500,18 @@ function update(dt){
   // Flash
   if(flashT>0){flashT-=dt;if(flashT<=0)document.getElementById('flash-msg').style.opacity='0';}
 
+  // Low-struct alarm — beep every 3 s when below 25%
+  if(!G._alarmT) G._alarmT=0;
+  G._alarmT-=dt;
+  if(p.struct>0 && p.struct<p.maxStruct*0.25 && G._alarmT<=0){
+    sndAlarm();
+    G._alarmT=3;
+  }
+
   // Death
   if(p.struct<=0&&!G.dead){
     G.dead=true;running=false;
+    sndEngineStop();
     document.getElementById('mouse-ring').style.display='none';
     for(let i=0;i<60;i++){
       const a=Math.random()*PI2,b=(Math.random()-.5)*PI,sp=50+Math.random()*300;

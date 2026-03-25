@@ -1,6 +1,18 @@
 // ═══════════════════════════════════════════════════════════
 //  §5/§12/§13 FACTIONS · REPUTATION · SIMULATION
 // ═══════════════════════════════════════════════════════════
+// ── FACTION ECONOMY CONFIG ────────────────────────────────────
+// shipCost/capitalCost: assets consumed per spawn
+// spawnInterval: seconds between economy spawn attempts
+// passiveIncome: assets granted every 30 s
+// controlBase: base max-ships cap (modified ±by econ/str at runtime)
+const FACTION_ECON_CFG = {
+  governmental: { shipCost:15, capitalCost:80,  spawnInterval:120, passiveIncome:5, controlBase:12 },
+  corporate:    { shipCost:20, capitalCost:100, spawnInterval:150, passiveIncome:4, controlBase:8  },
+  criminal:     { shipCost:10, capitalCost:60,  spawnInterval:90,  passiveIncome:3, controlBase:10 },
+  independent:  { shipCost:18, capitalCost:90,  spawnInterval:130, passiveIncome:3, controlBase:6  },
+};
+
 const FACTIONS_INIT = [
   { id:'f01',name:'SOL POLICE',      cat:'governmental',col:'#4488ff',str:70,econ:65,
     systems:['sol'], spawnWeight:.35,
@@ -51,11 +63,35 @@ function initFactions(){
     FACTIONS[d.id]={
       ...d, rels:{...d.rels}, flags:{...d.flags},
       activeGoal:null, recentKills:0,
+      assets:50, _spawnCd:Math.random()*60, _passiveCd:30,
     };
   });
 }
 function getFaction(id){ return FACTIONS[id]; }
 function allFactions(){ return Object.values(FACTIONS); }
+
+// ── ECONOMY HELPERS ───────────────────────────────────────────
+function factionEconCfg(fid){
+  const f=FACTIONS[fid]; if(!f) return FACTION_ECON_CFG.independent;
+  return FACTION_ECON_CFG[f.cat] || FACTION_ECON_CFG.independent;
+}
+function factionAddAssets(fid, amount){
+  const f=FACTIONS[fid]; if(!f) return;
+  f.assets = Math.min(250, (f.assets||0) + amount);
+}
+// Active ship count for a faction — excludes cargo freighters (they're infrastructure, not combat power)
+function factionPower(fid){
+  if(!G||!G.enemies) return 0;
+  return G.enemies.filter(e=>e.factionId===fid && e.struct>0 && !e._dead && e.aiRole!=='cargo').length;
+}
+// Max ships allowed — base + econ/str modifiers
+function factionControl(fid){
+  const f=FACTIONS[fid]; if(!f) return 0;
+  const cfg=factionEconCfg(fid);
+  return cfg.controlBase
+    + Math.floor((f.econ-50)*0.08)
+    + Math.floor((f.str -50)*0.04);
+}
 
 // §13 Rep helpers
 function repLabel(rep){
@@ -170,17 +206,19 @@ function fastTick(){
   queue.forEach(ev=>{
     if(ev.type==='SHIP_DESTROYED'){
       const d=ev.data, f=FACTIONS[d.factionId]; if(!f)return;
-      const repHit = d.hullKey==='cruiser'?-10:d.hullKey==='freighter_npc'?-5:-3;
       const strHit = d.hullKey==='cruiser'?-2:d.hullKey==='freighter_npc'?-0.2:-0.5;
-      adjustRep(d.factionId,repHit,true);
-      adjustStr(d.factionId,strHit);
-      adjustEcon(d.factionId,-0.3);
-      f.recentKills=(f.recentKills||0)+1;
-      // Killing pirates earns credit with lawful factions
-      if(f.cat==='criminal'){
-        adjustRep('f01',+2,true);
-        adjustRep('f05',+2,true);
-        adjustRep('f10',+1,true);
+      adjustStr(d.factionId,strHit);   // structural damage always (reflects real loss)
+      adjustEcon(d.factionId,-0.3);    // economic damage always
+      // Rep and bounty tracking only for player kills — NPC-vs-NPC combat is invisible to player rep
+      if(d.playerKill){
+        const repHit = d.hullKey==='cruiser'?-10:d.hullKey==='freighter_npc'?-5:-3;
+        adjustRep(d.factionId,repHit,true);
+        f.recentKills=(f.recentKills||0)+1;
+        if(f.cat==='criminal'){
+          adjustRep('f01',+2,true);
+          adjustRep('f05',+2,true);
+          adjustRep('f10',+1,true);
+        }
       }
     }
     if(ev.type==='TRADE_COMPLETED'){
@@ -246,4 +284,82 @@ function slowTick(){
     });
   });
   evalGoals();
+}
+
+// ── ECONOMY TICK — called every frame from update() ───────────
+function econTick(dt){
+  if(!G || G.mode!=='space') return;
+  allFactions().forEach(f=>{
+    if(!f.flags.active) return;
+    const cfg = factionEconCfg(f.id);
+
+    // Passive income every 30 s
+    f._passiveCd -= dt;
+    if(f._passiveCd <= 0){
+      f._passiveCd = 30;
+      factionAddAssets(f.id, cfg.passiveIncome);
+    }
+
+    // Spawn attempt on interval
+    f._spawnCd -= dt;
+    if(f._spawnCd <= 0){
+      f._spawnCd = cfg.spawnInterval;
+      const power   = factionPower(f.id);
+      const control = factionControl(f.id);
+      if(power < control){
+        // Capital: needs 70% of control filled AND enough capital assets
+        if(f.assets >= cfg.capitalCost && power >= Math.floor(control * 0.7)){
+          factionSpawnCapital(f.id);
+          f.assets -= cfg.capitalCost;
+        } else if(f.assets >= cfg.shipCost){
+          factionSpawnShip(f.id);
+          f.assets -= cfg.shipCost;
+        }
+      }
+    }
+  });
+}
+
+function factionSpawnShip(fid){
+  const f=FACTIONS[fid]; if(!f||!G) return;
+  if(f.cat==='criminal'){
+    const base=G.pBases.find(pb=>pb.factionId===fid);
+    if(!base) return;
+    spawnNPC(Math.random()<0.65?'pirate':'recovery', f.col, null, null, base);
+  } else if(f.cat==='corporate'){
+    if(fid==='f05' && Math.random()<0.20){
+      // Merchant Guild: 20% chance to deploy a salvage/recovery ship at their station
+      const homeSt = G.stations.find(s=>s.factionId===fid) || pickStation();
+      spawnNPC('recovery', f.col, homeSt, null, null);
+    } else {
+      // Cargo run — Merchants use 30% own routes, 70% carry goods for other factions
+      let routeFrom;
+      if(fid==='f05' && Math.random()>0.30){
+        const otherSts = G.stations.filter(s=>s.factionId && s.factionId!==fid);
+        routeFrom = otherSts.length ? otherSts[Math.floor(Math.random()*otherSts.length)] : pickStation();
+      } else {
+        routeFrom = G.stations.find(s=>s.factionId===fid) || pickStation();
+      }
+      const allDest = G.stations.filter(s=>s!==routeFrom);
+      const dest = allDest.length ? allDest[Math.floor(Math.random()*allDest.length)] : pickStation();
+      spawnNPC(Math.random()<0.55?'corporate':'cargo', f.col, routeFrom, dest);
+    }
+  } else {
+    // governmental / independent
+    const st=pickStation();
+    const dest=pickStation();
+    if(Math.random()<0.65) spawnNPC('militia', f.col, st);
+    else spawnNPC('cargo', f.col, st, dest);
+  }
+}
+
+function factionSpawnCapital(fid){
+  const f=FACTIONS[fid]; if(!f||!G) return;
+  if(f.cat==='criminal'){
+    const base=G.pBases.find(pb=>pb.factionId===fid);
+    if(base) spawnCapital(base);
+  } else {
+    const homeObj = G.stations.find(s=>s.factionId===fid) || pickStation();
+    spawnCapital(homeObj, fid, false); // non-hostile lawful capital
+  }
 }

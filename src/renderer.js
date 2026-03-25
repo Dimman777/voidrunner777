@@ -199,6 +199,19 @@ function drawHUD(){
     ctx.globalAlpha=dmgAlpha;ctx.fillStyle='#ff2200';ctx.fillRect(0,0,W,H);
     ctx.globalAlpha=1;dmgAlpha=Math.max(0,dmgAlpha-.012);
   }
+
+  // ── ATMOSPHERE DANGER WARNING ──
+  if(G._atmoDanger){
+    const pulse=0.5+0.5*Math.abs(Math.sin(G.time*4));
+    ctx.save();
+    ctx.globalAlpha=0.4+0.6*pulse;
+    ctx.fillStyle='#ff6600';
+    ctx.font='bold 26px monospace';
+    ctx.textAlign='center';
+    ctx.fillText('⚠ PLANETARY ATMOSPHERE DANGER',CX,H*0.22);
+    ctx.globalAlpha=1;
+    ctx.restore();
+  }
 }
 
 
@@ -496,10 +509,21 @@ function drawTargeting(){
     const activeHPs = p.hardpoints.filter(hp=>hp.weapon && hp.weapon.type===p.activeGroup);
     const wpn = activeHPs[0]?.weapon;
     if(wpn){
-      const bulletSpd = wpn.velocity || wpn.range || 600;
+      // For lasers use range as a stand-in speed (instantaneous); ballistic/HV use velocity
+      const bulletSpd = wpn.type === 'laser' ? 99999 : (wpn.velocity || 600);
       const relVel = v3sub(t.vel||v3(0,0,0), p.vel);
       const toTgt = v3sub(t.pos, p.pos);
-      const tHit = dP / bulletSpd;
+      // Quadratic intercept: solve (bulletSpd²-|relVel|²)t² + 2(toTgt·relVel)t - |toTgt|² = 0
+      const a = bulletSpd*bulletSpd - v3dot(relVel,relVel);
+      const b = 2*v3dot(toTgt,relVel);
+      const c = -v3dot(toTgt,toTgt);
+      let tHit;
+      if(Math.abs(a) < 0.1){ tHit = Math.abs(b)>0.001 ? -c/b : dP/bulletSpd; }
+      else {
+        const disc = b*b - 4*a*c;
+        tHit = disc >= 0 ? (-b + Math.sqrt(disc))/(2*a) : dP/bulletSpd;
+        if(tHit < 0) tHit = dP/bulletSpd;
+      }
       const leadPos = v3add(t.pos, v3scale(relVel, tHit));
       const lcp = w2c(leadPos, cPos, cQ);
       if(lcp.z > NEAR){
@@ -594,10 +618,26 @@ function drawTargeting(){
     ctx.fillText('STR '+Math.round(sp2*100)+'%', mfdX+120, mfdY+242);
   }
 
+  // Extra info row — below ARM/STR labels, clear of bars
+  ctx.font='9px Courier New'; ctx.textAlign='left';
+  if(t.aiRole==='recovery'){
+    const cCount = t._cargo?.length||0;
+    ctx.globalAlpha=0.85; ctx.fillStyle='#ff9944';
+    ctx.fillText(`CARGO: ${cCount}/5 BOX${cCount!==1?'ES':''}`, mfdX+10, mfdY+256);
+  } else if(t.aiRole==='cargo' && t._cargoOwner){
+    const ownerFac = FACTIONS[t._cargoOwner];
+    const destFid  = t.routeB?.factionId;
+    const destFac  = destFid ? FACTIONS[destFid] : null;
+    ctx.globalAlpha=0.75; ctx.fillStyle=ownerFac?.col||'#888';
+    ctx.fillText((ownerFac?.name||t._cargoOwner)+' CARGO', mfdX+10, mfdY+256);
+    ctx.globalAlpha=0.5; ctx.fillStyle=destFac?.col||'#888';
+    ctx.fillText('→ '+(destFac?.name||t.routeB?.name||'?'), mfdX+10, mfdY+267);
+  }
+
   // Distance
   ctx.globalAlpha=0.45; ctx.fillStyle='#fff'; ctx.font='11px Courier New';
   ctx.textAlign='right';
-  ctx.fillText(Math.round(dP)+'m', mfdX+mfdW-10, mfdY+260);
+  ctx.fillText(Math.round(dP)+'m', mfdX+mfdW-10, mfdY+267);
 
   ctx.restore();
   ctx.globalAlpha=1;
@@ -1179,28 +1219,53 @@ function updHUD(){
   document.getElementById('vel-info').textContent=spd>5?`DRIFT: ${Math.round(drift)}°`:'';
 
   const ti=document.getElementById('target-info');
-  let near=null,best=Infinity;
+  // Prefer the T-targeted ship; fall back to nearest within 2000u
+  let near=null, best=Infinity;
   G.enemies.forEach(e=>{const d=v3len(v3sub(e.pos,p.pos));if(d<best&&d<2000){best=d;near=e;}});
-  if(near){
-    if(near.isCapital && near.components){
-      // Capital ship — show component health
-      let compHtml = near.components.map(c=>{
+  const tgt = (G.targetShip && G.enemies.includes(G.targetShip) && G.targetShip.struct>0)
+              ? G.targetShip : near;
+  const tgtDist = tgt ? v3len(v3sub(tgt.pos,p.pos)) : 0;
+  if(tgt){
+    if(tgt.isCapital && tgt.components){
+      let compHtml = tgt.components.map(c=>{
         const pct = c.maxHp>0?Math.round(c.hp/c.maxHp*100):0;
         const col = c.hp<=0?'#444':pct>50?'#00ff88':pct>25?'#ffaa00':'#ff4444';
         return `<span style="opacity:${c.hp>0?.6:.25};color:${col}">${c.name}: ${pct}%${c.isCore?' ★':''}</span>`;
       }).join('<br>');
-      ti.innerHTML=`<span style="color:${near.col};font-size:11px">${near.name}</span><br>
+      ti.innerHTML=`<span style="color:${tgt.col};font-size:11px">${tgt.name}</span><br>
         <span style="opacity:0.35;font-size:8px">CAPITAL</span><br>
         ${compHtml}<br>
-        <span style="opacity:0.4">${Math.round(best)}m</span>`;
+        <span style="opacity:0.4">${Math.round(tgtDist)}m</span>`;
     } else {
-      const armPct=near.maxArmour>0?Math.round(near.armour/near.maxArmour*100):0;
-      const strPct=near.maxStruct>0?Math.round(near.struct/near.maxStruct*100):0;
-      const role=near.aiRole?near.aiRole.toUpperCase():'';
-      ti.innerHTML=`<span style="color:${near.col}">${near.name}</span><br>
+      const armPct=tgt.maxArmour>0?Math.round(tgt.armour/tgt.maxArmour*100):0;
+      const strPct=tgt.maxStruct>0?Math.round(tgt.struct/tgt.maxStruct*100):0;
+      const role=tgt.aiRole?tgt.aiRole.toUpperCase():'';
+
+      // Recovery: always show cargo hold status (X/5) so player can assess value
+      const cargoCount = tgt._cargo?.length||0;
+      const cargoLine = (tgt.aiRole==='recovery')
+        ? `<br><span style="color:#ff9944">CARGO: ${cargoCount}/5 BOX${cargoCount!==1?'ES':''}</span>`
+        : '';
+
+      // Cargo freighter: show cargo owner faction → destination faction
+      let routeLine = '';
+      if(tgt.aiRole==='cargo'){
+        const ownerFid   = tgt._cargoOwner || tgt.factionId;
+        const ownerName  = FACTIONS[ownerFid]?.name || '?';
+        const destFid    = tgt.routeB?.factionId;
+        const destName   = (destFid && FACTIONS[destFid]?.name) || tgt.routeB?.name || '?';
+        const ownerCol   = FACTIONS[ownerFid]?.col || '#888';
+        const destCol    = (destFid && FACTIONS[destFid]?.col) || '#888';
+        routeLine = `<br><span style="font-size:8px;opacity:0.7">` +
+          `<span style="color:${ownerCol}">${ownerName}</span>` +
+          ` <span style="opacity:0.4">→</span> ` +
+          `<span style="color:${destCol}">${destName}</span> ASSETS</span>`;
+      }
+
+      ti.innerHTML=`<span style="color:${tgt.col}">${tgt.name}</span><br>
         <span style="opacity:0.35;font-size:8px">${role}</span><br>
         <span style="opacity:0.5">ARM: ${armPct}% · STR: ${strPct}%</span><br>
-        <span style="opacity:0.4">${Math.round(best)}m</span>`;
+        <span style="opacity:0.4">${Math.round(tgtDist)}m</span>${cargoLine}${routeLine}`;
     }
   } else ti.innerHTML='';
 

@@ -16,7 +16,7 @@
 let _renderer, _scene, _sceneRoot, _camera, _sun;
 
 // Scene object groups (rebuilt per system, live in _sceneRoot)
-let _stationGroup, _pBaseGroup, _planetGroup;
+let _stationGroup, _pBaseGroup, _planetGroup, _lzGroup;
 let _launchZoneObj = null;
 let _starField = null;
 
@@ -123,6 +123,46 @@ function _modelToMesh(model, col) {
   return new THREE.Mesh(geo, _meshMat(col));
 }
 
+// Rotate a hex color's hue by 180° and lock lightness to ~0.58 so the
+// landing zone markers always stand out against their parent station.
+function _contrastHex(hex) {
+  const r=parseInt(hex.slice(1,3),16)/255||0;
+  const g=parseInt(hex.slice(3,5),16)/255||0;
+  const b=parseInt(hex.slice(5,7),16)/255||0;
+  const max=Math.max(r,g,b), min=Math.min(r,g,b), l=(max+min)/2;
+  let h=0, s=0;
+  if(max!==min){
+    const d=max-min;
+    s=l>0.5?d/(2-max-min):d/(max+min);
+    if(max===r)      h=((g-b)/d+(g<b?6:0))/6;
+    else if(max===g) h=((b-r)/d+2)/6;
+    else             h=((r-g)/d+4)/6;
+  }
+  h=(h+0.5)%1;                    // rotate 180°
+  const nl=0.58, ns=Math.max(0.75,s);
+  const q=nl<0.5?nl*(1+ns):nl+ns-nl*ns, pp=2*nl-q;
+  function h2r(t){ t=(t+1)%1; if(t<1/6)return pp+(q-pp)*6*t; if(t<1/2)return q; if(t<2/3)return pp+(q-pp)*(2/3-t)*6; return pp; }
+  return '#'+[h+1/3,h,h-1/3].map(t=>Math.round(h2r(t)*255).toString(16).padStart(2,'0')).join('');
+}
+
+// Landing-zone wireframe: LineSegments from model edges — no z-fighting,
+// unique material per instance so opacity/intensity can be driven per-frame.
+function _lzModelToLineSegs(model, col) {
+  const positions = [];
+  (model.edges || []).forEach(([i, j]) => {
+    const a = model.verts[i], b = model.verts[j];
+    positions.push(a[0],a[1],a[2], b[0],b[1],b[2]);
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: new THREE.Color(col),
+    transparent: true,
+    opacity: 0.35,
+  });
+  return new THREE.LineSegments(geo, mat);
+}
+
 // ═══════════════════════════════════════════════════════════
 //  ONE-TIME SETUP — call once before init()
 // ═══════════════════════════════════════════════════════════
@@ -163,6 +203,7 @@ function initScene() {
   _stationGroup = new THREE.Group(); _sceneRoot.add(_stationGroup);
   _pBaseGroup   = new THREE.Group(); _sceneRoot.add(_pBaseGroup);
   _planetGroup  = new THREE.Group(); _sceneRoot.add(_planetGroup);
+  _lzGroup      = new THREE.Group(); _sceneRoot.add(_lzGroup);
 
   // Bullet point cloud (in sceneRoot so Z coords match game world)
   _bulletPositions = new Float32Array(MAX_BULLETS * 3);
@@ -206,6 +247,13 @@ function initSceneForSystem(G) {
   // Three.js world space flips Z → (0, 1000, 8000).
   _sun.color.set(SYS[G.sys].starCol);
 
+  // Clear landing zones (unique materials — dispose both)
+  while (_lzGroup.children.length) {
+    const c = _lzGroup.children[0];
+    c.geometry.dispose();
+    if (c.material) c.material.dispose();
+    _lzGroup.remove(c);
+  }
   // Clear stations
   while (_stationGroup.children.length) {
     const c = _stationGroup.children[0];
@@ -254,6 +302,15 @@ function initSceneForSystem(G) {
     mesh.position.set(st.pos.x, st.pos.y, st.pos.z);
     mesh.userData.entity = st;
     _stationGroup.add(mesh);
+    // Landing zones — wireframe boxes with contrasting colour + beacon flash
+    const lzCol = _contrastHex(st.col);
+    (st.landingZones || []).forEach(lz => {
+      const lzMesh = _lzModelToLineSegs(lz.model, lzCol);
+      lzMesh.position.set(lz.pos.x, lz.pos.y, lz.pos.z);
+      lzMesh.userData.lzRef = lz;
+      lzMesh.userData.station = st;
+      _lzGroup.add(lzMesh);
+    });
   });
 
   // Pirate bases
@@ -342,6 +399,25 @@ function drawFrame(G, dt) {
   _pBaseGroup.children.forEach(mesh => {
     const pb = mesh.userData.entity;
     if (pb) mesh.rotation.y = pb.rAngle || 0;
+  });
+  // Landing zones — show only for the nav-targeted station when within 2500u
+  const _navSt = G.navTarget?.type === 'STATION'
+    ? (G.stations?.find(s => s.name === G.navTarget.name) ?? null)
+    : null;
+  const _lzDist = _navSt
+    ? Math.sqrt((G.p.pos.x-_navSt.pos.x)**2+(G.p.pos.y-_navSt.pos.y)**2+(G.p.pos.z-_navSt.pos.z)**2)
+    : Infinity;
+  const _lzVisible = _navSt !== null && _lzDist < 2500;
+  // Smooth beacon pulse: opacity cycles 0.15 → 1.0 → 0.15 every ~2 s
+  const _lzOpacity = 0.15 + 0.85 * Math.abs(Math.sin(G.time * 1.5));
+  _lzGroup.children.forEach(mesh => {
+    const lz = mesh.userData.lzRef;
+    if (!lz) return;
+    mesh.visible = _lzVisible && mesh.userData.station === _navSt;
+    if (mesh.visible) {
+      mesh.rotation.y = lz.rAngle || 0;
+      mesh.material.opacity = _lzOpacity;
+    }
   });
   if (_launchZoneObj && G.launchZone) {
     G.launchZone.rAngle = (G.launchZone.rAngle || 0) + 0.3 * (dt || 0.016);
