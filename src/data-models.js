@@ -168,26 +168,112 @@ function mkCargoBox(){
 }
 const M_CARGO_BOX = mkCargoBox();
 
+// §8 Per-component 3-D models for capital ships (used by renderer-threejs.js).
+// offset: [x,y,z] local position from ship centre in world units (scale already applied).
+// verts:  local vertices relative to the component's offset centre.
+// Index order MUST match CAP_DEFS[type].components.
+const CAP_COMPONENT_MODELS = {
+  // ── FRIGATE (scale 12) ─────────────────────────────────────────────────────
+  frigate: [
+    {
+      // 0: NOSE — forward pyramid, world z +36 → +60
+      offset: [0, 0, 48],
+      verts: [
+        [0,  0,  12],                                           // apex (forward)
+        [10,  5, -12], [-10,  5, -12], [-10, -5, -12], [10, -5, -12],  // base ring
+      ],
+    },
+    {
+      // 1: MAIN HULL — rectangular box, world z -24 → +36
+      offset: [0, 0, 6],
+      verts: [
+        [ 18,  7,  30], [-18,  7,  30], [-18, -7,  30], [ 18, -7,  30],
+        [ 18,  7, -30], [-18,  7, -30], [-18, -7, -30], [ 18, -7, -30],
+      ],
+    },
+    {
+      // 2: REAR HULL — trapezoid with wing stubs, world z -50 → -24
+      offset: [0, 0, -36],
+      verts: [
+        [ 12,  5,  12], [-12,  5,  12], [-12, -5,  12], [ 12, -5,  12], // front (narrow)
+        [ 22,  0, -10], [-22,  0, -10],  // wing tips
+        [  0,  7, -10], [  0, -5, -14],  // top fin + tail point
+      ],
+    },
+  ],
+
+  // ── DREADNOUGHT (scale 16) ─────────────────────────────────────────────────
+  dreadnought: [
+    {
+      // 0: NOSE — forward pyramid, world z +48 → +112
+      // offset at 80 so base (local z=-32) aligns with MAIN HULL front face (world z=+48)
+      offset: [0, 0, 80],
+      verts: [
+        [0,  0,  32],                                                    // apex
+        [22, 10, -32], [-22, 10, -32], [-22, -10, -32], [22, -10, -32], // base matches hull front face
+      ],
+    },
+    {
+      // 1: PORT WING — swept frustum on port (-X) side
+      offset: [-38, 0, -16],
+      verts: [
+        [ 18,  8,  32], [ 18, -8,  32],   // inner front (toward hull)
+        [ 18,  6, -32], [ 18, -6, -32],   // inner back
+        [ -6,  4,   8], [ -6, -4,   8],   // outer mid
+        [ -4,  3, -32], [ -4, -3, -32],   // outer back tip
+      ],
+    },
+    {
+      // 2: STBD WING — mirror of port on starboard (+X) side
+      offset: [38, 0, -16],
+      verts: [
+        [-18,  8,  32], [-18, -8,  32],
+        [-18,  6, -32], [-18, -6, -32],
+        [  6,  4,   8], [  6, -4,   8],
+        [  4,  3, -32], [  4, -3, -32],
+      ],
+    },
+    {
+      // 3: MAIN HULL — large box, world z -48 → +48
+      offset: [0, 0, 0],
+      verts: [
+        [ 22,  10,  48], [-22,  10,  48], [-22, -10,  48], [ 22, -10,  48],
+        [ 22,  10, -48], [-22,  10, -48], [-22, -10, -48], [ 22, -10, -48],
+      ],
+    },
+    {
+      // 4: REAR HULL — trapezoidal + rear wing stubs, world z -80 → -48
+      offset: [0, 0, -64],
+      verts: [
+        [ 16,  6,  16], [-16,  6,  16], [-16, -6,  16], [ 16, -6,  16], // front face
+        [ 35,  0,  -8], [-35,  0,  -8],  // wing tips
+        [  0, 13,   8], [  0, -8,  -8],  // top fin + belly
+        [  0,  0, -16],                   // tail point
+      ],
+    },
+  ],
+};
+
 // §8 Capital ship definitions
 const CAP_DEFS = {
   frigate: {
     name:'FRIGATE', reward:900, sz:45,
     model:M_FRIGATE, scale:12, maxSpd:80, baseSpd:40, turn:0.3,
     components:[
-      {name:'NOSE',     hp:80,  isCore:false, turrets:1},
-      {name:'MAIN HULL',hp:200, isCore:true,  turrets:2},
-      {name:'REAR HULL',hp:100, isCore:false, turrets:1},
+      {name:'NOSE',     hp:750,  isCore:false, turrets:2},
+      {name:'MAIN HULL',hp:1500, isCore:true,  turrets:4},
+      {name:'REAR HULL',hp:750,  isCore:false, turrets:2},
     ],
   },
   dreadnought: {
     name:'DREADNOUGHT', reward:3500, sz:65,
     model:M_DREADNOUGHT, scale:16, maxSpd:60, baseSpd:30, turn:0.2,
     components:[
-      {name:'NOSE',      hp:120, isCore:false, turrets:2},
-      {name:'PORT WING', hp:130, isCore:false, turrets:1},
-      {name:'STBD WING', hp:130, isCore:false, turrets:1},
-      {name:'MAIN HULL', hp:300, isCore:true,  turrets:2},
-      {name:'REAR HULL', hp:150, isCore:false, turrets:2},
+      {name:'NOSE',      hp:2000, isCore:false, turrets:6},
+      {name:'PORT WING', hp:2500, isCore:false, turrets:3},
+      {name:'STBD WING', hp:2500, isCore:false, turrets:3},
+      {name:'MAIN HULL', hp:3000, isCore:true,  turrets:6},
+      {name:'REAR HULL', hp:2000, isCore:false, turrets:6},
     ],
   },
 };

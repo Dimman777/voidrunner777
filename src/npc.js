@@ -231,9 +231,26 @@ function updBullets(arr,dt,isP){
 
           // §8 Capital ship component damage
           if(e.isCapital && e.components){
-            const alive = e.components.filter(c=>c.hp>0);
-            if(alive.length > 0){
-              const comp = alive[Math.floor(Math.random()*alive.length)];
+            // Pick the alive component whose centre is closest to the bullet impact point.
+            // Uses the same YXZ rotation as the renderer to compute world position.
+            const _compDefs = CAP_COMPONENT_MODELS[e.capType];
+            let comp = null, _bestDist = Infinity;
+            e.components.forEach((c, ci) => {
+              if(c.hp <= 0) return;
+              let cx = e.pos.x, cy2 = e.pos.y, cz = e.pos.z;
+              if(_compDefs && _compDefs[ci]){
+                const off = _compDefs[ci].offset;
+                const _cy = Math.cos(e.yaw||0), _sy = Math.sin(e.yaw||0);
+                const _cp = Math.cos(e.pitch||0), _sp = Math.sin(e.pitch||0);
+                const _yx = off[0]*_cy + off[2]*_sy;
+                const _yy = off[1];
+                const _yz = -off[0]*_sy + off[2]*_cy;
+                cx += _yx; cy2 += _yy*_cp - _yz*_sp; cz += _yy*_sp + _yz*_cp;
+              }
+              const _d = v3len(v3sub(b.pos, {x:cx,y:cy2,z:cz}));
+              if(_d < _bestDist){ _bestDist = _d; comp = c; }
+            });
+            if(comp){
               comp.hp -= totalDmg;
               if(comp.hp <= 0){
                 comp.hp = 0;

@@ -20,8 +20,13 @@ let _stationGroup, _pBaseGroup, _planetGroup, _lzGroup;
 let _launchZoneObj = null;
 let _starField = null;
 
-// NPC mesh tracking: entity object → THREE.Mesh
+// NPC mesh tracking: entity object → THREE.Mesh (non-capital ships only)
 const _npcMeshes = new Map();
+
+// Capital ship component groups: entity → { group: THREE.Group, compMeshes: [{mesh, destroyed}] }
+const _capCompGroups = new Map();
+// Drifting destroyed component debris: [{mesh, vel, angVel, life}]
+const _capDebris = [];
 
 // Cargo box mesh tracking: box object → THREE.Mesh
 const _cargoMeshes = new Map();
@@ -279,12 +284,26 @@ function initSceneForSystem(G) {
     _sceneRoot.remove(_launchZoneObj);
     _launchZoneObj = null;
   }
-  // Clear NPC meshes (enemies array was wiped by loadSystem)
+  // Clear NPC meshes (non-capital, enemies array was wiped by loadSystem)
   for (const [, mesh] of _npcMeshes) {
     mesh.geometry.dispose();
     _sceneRoot.remove(mesh);
   }
   _npcMeshes.clear();
+
+  // Clear capital component groups
+  for (const [, capData] of _capCompGroups) {
+    _sceneRoot.remove(capData.group);
+  }
+  _capCompGroups.clear();
+
+  // Clear drifting debris
+  for (const d of _capDebris) {
+    d.mesh.geometry.dispose();
+    d.mesh.material.dispose();
+    _sceneRoot.remove(d.mesh);
+  }
+  _capDebris.length = 0;
 
   // Clear cargo box meshes
   for (const [, mesh] of _cargoMeshes) {
@@ -425,16 +444,18 @@ function drawFrame(G, dt) {
   }
 
   _syncNPCs(G);
+  _syncCapitals(G);
   _syncCargos(G);
   _syncBullets(G);
   _syncParticles(G);
+  _updateDebris(dt);
 
   _renderer.render(_scene, _camera);
 }
 
-// ── NPC MESH SYNC ──
+// ── NPC MESH SYNC (non-capital ships only) ──
 function _syncNPCs(G) {
-  const currentSet = new Set(G.enemies);
+  const currentSet = new Set(G.enemies.filter(e => !e.isCapital));
 
   // Remove meshes for enemies no longer in the array
   for (const [entity, mesh] of _npcMeshes) {
@@ -445,8 +466,8 @@ function _syncNPCs(G) {
     }
   }
 
-  // Create or update mesh for each active enemy
-  G.enemies.forEach(e => {
+  // Create or update mesh for each active non-capital enemy
+  currentSet.forEach(e => {
     if (!_npcMeshes.has(e)) {
       const mesh = _modelToMesh(e.model, e.col);
       _sceneRoot.add(mesh);
@@ -460,6 +481,136 @@ function _syncNPCs(G) {
     mesh.rotation.x = e.pitch || 0;
     mesh.visible = e.struct > 0;
   });
+}
+
+// ── CAPITAL SHIP COMPONENT SYNC ──
+// Detaches a destroyed component mesh as a drifting grey debris piece.
+function _spawnCompDebris(compMesh, entity) {
+  // Compute component world position from entity state (game space),
+  // applying YXZ Euler rotation of the ship to the component's local offset.
+  const lx = compMesh.position.x, ly = compMesh.position.y, lz = compMesh.position.z;
+  const cy = Math.cos(entity.yaw || 0), sy = Math.sin(entity.yaw || 0);
+  const cp = Math.cos(entity.pitch || 0), sp = Math.sin(entity.pitch || 0);
+  // Yaw (Y axis) rotation
+  const yx = lx*cy + lz*sy, yy = ly, yz = -lx*sy + lz*cy;
+  // Pitch (X axis) rotation
+  const wx = yx, wy = yy*cp - yz*sp, wz = yy*sp + yz*cp;
+  const worldX = entity.pos.x + wx;
+  const worldY = entity.pos.y + wy;
+  const worldZ = entity.pos.z + wz;
+
+  const debrisMat = new THREE.MeshStandardMaterial({
+    color: 0x2a2a2a,
+    emissive: new THREE.Color(0x1a0800),  // residual heat glow
+    metalness: 0.5,
+    roughness: 0.7,
+    transparent: true,
+    opacity: 1.0,
+  });
+  const debrisMesh = new THREE.Mesh(compMesh.geometry, debrisMat);
+  debrisMesh.position.set(worldX, worldY, worldZ);
+  debrisMesh.rotation.order = 'YXZ';
+  debrisMesh.rotation.y = entity.yaw   || 0;
+  debrisMesh.rotation.x = entity.pitch || 0;
+  _sceneRoot.add(debrisMesh);
+
+  const kickMag = 12 + Math.random() * 22;
+  const kx = Math.random()-0.5, ky = Math.random()-0.5, kz = Math.random()-0.5;
+  const klen = Math.sqrt(kx*kx+ky*ky+kz*kz) || 1;
+  const spinRate = 0.4 + Math.random() * 0.9;
+  const srx = Math.random()-0.5, sry = Math.random()-0.5, srz = Math.random()-0.5;
+  const slen = Math.sqrt(srx*srx+sry*sry+srz*srz) || 1;
+
+  _capDebris.push({
+    mesh: debrisMesh,
+    vel: {
+      x: (entity.vel?.x || 0) + (kx/klen) * kickMag,
+      y: (entity.vel?.y || 0) + (ky/klen) * kickMag,
+      z: (entity.vel?.z || 0) + (kz/klen) * kickMag,
+    },
+    angVel: {
+      x: (srx/slen) * spinRate,
+      y: (sry/slen) * spinRate,
+      z: (srz/slen) * spinRate,
+    },
+    life: 9 + Math.random() * 5,
+  });
+}
+
+function _syncCapitals(G) {
+  const currentSet = new Set(G.enemies.filter(e => e.isCapital));
+
+  // Remove groups for capitals that have been killed — detach survivors as debris
+  for (const [entity, capData] of _capCompGroups) {
+    if (!currentSet.has(entity)) {
+      capData.compMeshes.forEach(cm => {
+        if (!cm.destroyed) {
+          capData.group.remove(cm.mesh);  // detach before spawning
+          _spawnCompDebris(cm.mesh, entity);
+        }
+      });
+      _sceneRoot.remove(capData.group);
+      _capCompGroups.delete(entity);
+    }
+  }
+
+  // Create or update component groups for each active capital
+  currentSet.forEach(e => {
+    const compDefs = CAP_COMPONENT_MODELS[e.capType];
+    if (!compDefs) return;  // unknown type — no 3D component breakdown
+
+    if (!_capCompGroups.has(e)) {
+      const group = new THREE.Group();
+      const compMeshes = compDefs.map(def => {
+        const mesh = _modelToMesh({ verts: def.verts }, e.col);
+        mesh.position.set(def.offset[0], def.offset[1], def.offset[2]);
+        group.add(mesh);
+        return { mesh, destroyed: false };
+      });
+      _sceneRoot.add(group);
+      _capCompGroups.set(e, { group, compMeshes });
+    }
+
+    const { group, compMeshes } = _capCompGroups.get(e);
+    group.position.set(e.pos.x, e.pos.y, e.pos.z);
+    group.rotation.order = 'YXZ';
+    group.rotation.y = e.yaw   || 0;
+    group.rotation.x = e.pitch || 0;
+
+    // Detect newly destroyed components and detach as debris
+    e.components.forEach((comp, idx) => {
+      const cm = compMeshes[idx];
+      if (!cm || cm.destroyed) return;
+      if (comp.hp <= 0) {
+        cm.destroyed = true;
+        _spawnCompDebris(cm.mesh, e);
+        group.remove(cm.mesh);
+      }
+    });
+  });
+}
+
+// ── DEBRIS DRIFT + FADE ──
+function _updateDebris(dt) {
+  for (let i = _capDebris.length - 1; i >= 0; i--) {
+    const d = _capDebris[i];
+    d.life -= dt;
+    if (d.life <= 0) {
+      d.mesh.geometry.dispose();
+      d.mesh.material.dispose();
+      _sceneRoot.remove(d.mesh);
+      _capDebris.splice(i, 1);
+      continue;
+    }
+    d.mesh.position.x += d.vel.x * dt;
+    d.mesh.position.y += d.vel.y * dt;
+    d.mesh.position.z += d.vel.z * dt;
+    d.mesh.rotation.x += d.angVel.x * dt;
+    d.mesh.rotation.y += d.angVel.y * dt;
+    d.mesh.rotation.z += d.angVel.z * dt;
+    // Fade out over the final 3 seconds
+    if (d.life < 3) d.mesh.material.opacity = Math.max(0, d.life / 3);
+  }
 }
 
 // ── CARGO BOX SYNC ──
