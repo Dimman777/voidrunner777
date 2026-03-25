@@ -466,6 +466,23 @@ document.getElementById('start-btn').onclick=()=>{
     document.body.innerHTML=`<pre style="color:#ff4444;padding:30px;font-size:13px">STARTUP ERROR:\n${err.message}\n\n${err.stack}</pre>`;
   }
 };
+document.getElementById('devmode-btn').onclick=()=>{
+  invertPitch = document.getElementById('invert-pitch').checked;
+  document.getElementById('title-screen').style.display='none';
+  mX=null; mY=null; mDown=false;
+  try {
+    initScene();
+    init();
+    G.p.credits = 10000000;
+    initSceneForSystem(G);
+    lastT=performance.now();
+    requestAnimationFrame(loop);
+  } catch(err) {
+    document.body.style.background='#000';
+    document.body.innerHTML=`<pre style="color:#ff4444;padding:30px;font-size:13px">STARTUP ERROR:\n${err.message}\n\n${err.stack}</pre>`;
+  }
+};
+
 document.getElementById('restart-btn').onclick=()=>{
   document.getElementById('game-over').style.display='none';
   mX=null; mY=null; mDown=false; // discard stale mouse position

@@ -451,8 +451,8 @@ function update(dt){
     const roll=Math.random();
     if(roll<.15) spawnNPC('militia',null,pickStation());
     else if(roll<.30) spawnNPC('cargo',null,pickStation(),pickStation());
-    else if(roll<.62) spawnNPC('pirate',null,null,null,G.pBases[Math.floor(Math.random()*G.pBases.length)]);
-    else if(roll<.72) spawnNPC('recovery',null,null,null,G.pBases[Math.floor(Math.random()*G.pBases.length)]);
+    else if(roll<.62){ const _ab=G.pBases.filter(pb=>FACTIONS[pb.factionId]?.flags.active); if(_ab.length) spawnNPC('pirate',null,null,null,_ab[Math.floor(Math.random()*_ab.length)]); }
+    else if(roll<.72){ const _ab=G.pBases.filter(pb=>FACTIONS[pb.factionId]?.flags.active); if(_ab.length) spawnNPC('recovery',null,null,null,_ab[Math.floor(Math.random()*_ab.length)]); }
     else if(roll<.85) spawnNPC('merc');
     else spawnNPC('corporate',null,pickStation());
     G.spawnT=8+Math.random()*5;
@@ -464,6 +464,7 @@ function update(dt){
   if(G._pirateReinforceT<=0){
     G._pirateReinforceT = 6+Math.random()*5;
     G.pBases.forEach(pb=>{
+      if(!FACTIONS[pb.factionId]?.flags.active) return;
       const atBase = G.enemies.filter(en=>en.aiRole==='pirate'&&en.homeBase&&
         v3len(v3sub(en.homeBase.pos,pb.pos))<50).length;
       if(atBase < 5 && G.enemies.length < 45){

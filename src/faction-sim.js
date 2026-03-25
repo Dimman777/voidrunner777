@@ -121,7 +121,11 @@ function adjustRep(fid,delta,silent){
 function adjustStr(fid,delta){
   const f=FACTIONS[fid]; if(!f)return;
   f.str=Math.max(0,Math.min(100,f.str+delta));
-  if(f.str<=0){ f.flags.active=false; flash(`${f.name}: ELIMINATED`); }
+  if(f.str<=0 && f.flags.active){
+    f.flags.active=false;
+    f.col='#444444';
+    flash(`${f.name}: ELIMINATED`);
+  }
 }
 function adjustEcon(fid,delta){
   const f=FACTIONS[fid]; if(!f)return;

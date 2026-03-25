@@ -318,7 +318,7 @@ function updateMissions(dt){
       M.active=null; return;
     }
     if(npc && m._destStation){
-      if(v3len(v3sub(npc.pos, m._destStation.pos)) < 200){
+      if(v3len(v3sub(npc.pos, m._destStation.pos)) < 350){
         completeMission(); return;
       }
     }

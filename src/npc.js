@@ -760,13 +760,12 @@ function updEnemies(dt){
               e.aiSt='patrol'; e._chaseTarget=null; e.hostile=false;
             }
           }
-        } else if(tgt){
-          // Chasing a position (player)
-          steerTo(e, tgt, dt);
+        } else if(tgt === 'player' || (e.hostile && !tgt)){
+          // Chasing the player — always use live position
+          steerTo(e, p.pos, dt);
           moveNPC(e, dt, true);
-          npcFireAt(e, tgt, dt);
-          const dTgt = v3len(v3sub(tgt, e.pos));
-          if(dTgt > cfg.chaseLeash) { e.aiSt='patrol'; e._chaseTarget=null; }
+          npcFireAt(e, p.pos, dt);
+          if(!p.outlaw || dP > cfg.chaseLeash){ e.aiSt='patrol'; e._chaseTarget=null; e.hostile=false; }
         } else {
           e.aiSt = 'patrol';
         }
@@ -805,7 +804,7 @@ function updEnemies(dt){
 
         // Chase player if outlaw
         if(p.outlaw && dP < cfg.chaseLeash){
-          e._chaseTarget = p.pos; e.aiSt = 'chase'; e.hostile = true;
+          e._chaseTarget = 'player'; e.aiSt = 'chase'; e.hostile = true;
         }
 
         // Occasionally attach to a nearby same-faction capital as escort
