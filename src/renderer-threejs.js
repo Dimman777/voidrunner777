@@ -16,7 +16,7 @@
 let _renderer, _scene, _sceneRoot, _camera, _sun;
 
 // Scene object groups (rebuilt per system, live in _sceneRoot)
-let _stationGroup, _pBaseGroup, _planetGroup, _lzGroup;
+let _stationGroup, _pBaseGroup, _planetGroup, _lzGroup, _asteroidGroup;
 let _launchZoneObj = null;
 let _starField = null;
 
@@ -128,6 +128,31 @@ function _modelToMesh(model, col) {
   return new THREE.Mesh(geo, _meshMat(col));
 }
 
+// Build a lumpy asteroid mesh with radius ast.r and color ast.col.
+// 22 points distributed on a unit sphere, each scaled by ast.r * (0.7–1.0).
+function _buildAsteroidMesh(ast) {
+  const pts = [];
+  // Golden-angle spiral for even sphere distribution
+  const phi = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < 22; i++) {
+    const y = 1 - (i / 21) * 2;
+    const r = Math.sqrt(Math.max(0, 1 - y * y));
+    const theta = phi * i;
+    const jitter = 0.70 + Math.random() * 0.30;
+    const s = ast.r * jitter;
+    pts.push([Math.cos(theta) * r * s, y * s, Math.sin(theta) * r * s]);
+  }
+  const geo = _convexHullGeo(pts);
+  const col = new THREE.Color(ast.col);
+  const mat = new THREE.MeshStandardMaterial({
+    color: col,
+    emissive: col.clone().multiplyScalar(0.03),
+    roughness: 0.95,
+    metalness: 0.03,
+  });
+  return new THREE.Mesh(geo, mat);
+}
+
 // Rotate a hex color's hue by 180° and lock lightness to ~0.58 so the
 // landing zone markers always stand out against their parent station.
 function _contrastHex(hex) {
@@ -205,10 +230,11 @@ function initScene() {
   _scene.add(fill);
 
   // Static groups (go into sceneRoot)
-  _stationGroup = new THREE.Group(); _sceneRoot.add(_stationGroup);
-  _pBaseGroup   = new THREE.Group(); _sceneRoot.add(_pBaseGroup);
-  _planetGroup  = new THREE.Group(); _sceneRoot.add(_planetGroup);
-  _lzGroup      = new THREE.Group(); _sceneRoot.add(_lzGroup);
+  _stationGroup  = new THREE.Group(); _sceneRoot.add(_stationGroup);
+  _pBaseGroup    = new THREE.Group(); _sceneRoot.add(_pBaseGroup);
+  _planetGroup   = new THREE.Group(); _sceneRoot.add(_planetGroup);
+  _lzGroup       = new THREE.Group(); _sceneRoot.add(_lzGroup);
+  _asteroidGroup = new THREE.Group(); _sceneRoot.add(_asteroidGroup);
 
   // Bullet point cloud (in sceneRoot so Z coords match game world)
   _bulletPositions = new Float32Array(MAX_BULLETS * 3);
@@ -262,13 +288,13 @@ function initSceneForSystem(G) {
   // Clear stations
   while (_stationGroup.children.length) {
     const c = _stationGroup.children[0];
-    c.geometry.dispose();
+    _disposeObj(c);
     _stationGroup.remove(c);
   }
   // Clear pirate bases
   while (_pBaseGroup.children.length) {
     const c = _pBaseGroup.children[0];
-    c.geometry.dispose();
+    _disposeObj(c);
     _pBaseGroup.remove(c);
   }
   // Clear planets (each planet creates its own material — dispose it)
@@ -317,7 +343,8 @@ function initSceneForSystem(G) {
 
   // Stations
   G.stations.forEach(st => {
-    const mesh = _modelToMesh(st.model, st.col);
+    // Custom GLTF preferred; fall back to procedural convex hull.
+    const mesh = assetsGetModel('station') || _modelToMesh(st.model, st.col);
     mesh.position.set(st.pos.x, st.pos.y, st.pos.z);
     mesh.userData.entity = st;
     _stationGroup.add(mesh);
@@ -334,7 +361,7 @@ function initSceneForSystem(G) {
 
   // Pirate bases
   G.pBases.forEach(pb => {
-    const mesh = _modelToMesh(pb.model, pb.col);
+    const mesh = assetsGetModel('pirate_base') || _modelToMesh(pb.model, pb.col);
     mesh.position.set(pb.pos.x, pb.pos.y, pb.pos.z);
     mesh.userData.entity = pb;
     _pBaseGroup.add(mesh);
@@ -346,6 +373,14 @@ function initSceneForSystem(G) {
     _launchZoneObj.position.set(G.launchZone.pos.x, G.launchZone.pos.y, G.launchZone.pos.z);
     _launchZoneObj.userData.entity = G.launchZone;
     _sceneRoot.add(_launchZoneObj);
+  }
+
+  // Clear asteroids
+  while (_asteroidGroup.children.length) {
+    const c = _asteroidGroup.children[0];
+    if (c.geometry) c.geometry.dispose();
+    if (c.material) c.material.dispose();
+    _asteroidGroup.remove(c);
   }
 
   // Planets — solid sphere with MeshStandardMaterial + atmosphere glow shell
@@ -373,6 +408,17 @@ function initSceneForSystem(G) {
     const glow = new THREE.Mesh(glowGeo, glowMat);
     glow.position.set(pl.pos.x, pl.pos.y, pl.pos.z);
     _planetGroup.add(glow);
+
+    // Store mesh refs on orbiting planets so drawFrame can update their position
+    if (pl.orbitCenter) { pl._mesh = sphere; pl._glowMesh = glow; }
+  });
+
+  // Asteroids
+  (G.asteroids || []).forEach(ast => {
+    const mesh = _buildAsteroidMesh(ast);
+    mesh.position.set(ast.pos.x, ast.pos.y, ast.pos.z);
+    mesh.userData.astRef = ast;
+    _asteroidGroup.add(mesh);
   });
 }
 
@@ -410,14 +456,34 @@ function drawFrame(G, dt) {
   // Star field follows camera in world space
   if (_starField) _starField.position.set(p.pos.x, p.pos.y, -p.pos.z);
 
-  // Rotate stations & bases
+  // Update station positions (orbiting) + rotation
   _stationGroup.children.forEach(mesh => {
     const st = mesh.userData.entity;
-    if (st) mesh.rotation.y = st.rAngle || 0;
+    if (st) {
+      mesh.position.set(st.pos.x, st.pos.y, st.pos.z);
+      mesh.rotation.y = st.rAngle || 0;
+    }
   });
   _pBaseGroup.children.forEach(mesh => {
     const pb = mesh.userData.entity;
     if (pb) mesh.rotation.y = pb.rAngle || 0;
+  });
+  // Update orbiting planet (moon) mesh positions to match game-state pos
+  G.planets?.forEach(pl => {
+    if (pl._mesh) {
+      pl._mesh.position.set(pl.pos.x, pl.pos.y, pl.pos.z);
+      if (pl._glowMesh) pl._glowMesh.position.set(pl.pos.x, pl.pos.y, pl.pos.z);
+    }
+  });
+
+  // Update asteroid positions (orbiting) + tumble rotation
+  _asteroidGroup.children.forEach(mesh => {
+    const ast = mesh.userData.astRef;
+    if (ast) {
+      mesh.position.set(ast.pos.x, ast.pos.y, ast.pos.z);
+      mesh.rotation.y = ast.rAngle || 0;
+      mesh.rotation.x = (ast.rAngle || 0) * 0.4;
+    }
   });
   // Landing zones — show only for the nav-targeted station when within 2500u
   const _navSt = G.navTarget?.type === 'STATION'
@@ -432,6 +498,8 @@ function drawFrame(G, dt) {
   _lzGroup.children.forEach(mesh => {
     const lz = mesh.userData.lzRef;
     if (!lz) return;
+    // Always sync position so it follows the orbiting station
+    mesh.position.set(lz.pos.x, lz.pos.y, lz.pos.z);
     mesh.visible = _lzVisible && mesh.userData.station === _navSt;
     if (mesh.visible) {
       mesh.rotation.y = lz.rAngle || 0;
@@ -453,6 +521,15 @@ function drawFrame(G, dt) {
   _renderer.render(_scene, _camera);
 }
 
+// Dispose all geometry in an Object3D — handles both Mesh and Group.
+function _disposeObj(obj) {
+  if (obj.geometry) {
+    obj.geometry.dispose();
+  } else {
+    obj.traverse(m => { if (m.geometry) m.geometry.dispose(); });
+  }
+}
+
 // ── NPC MESH SYNC (non-capital ships only) ──
 function _syncNPCs(G) {
   const currentSet = new Set(G.enemies.filter(e => !e.isCapital));
@@ -460,7 +537,7 @@ function _syncNPCs(G) {
   // Remove meshes for enemies no longer in the array
   for (const [entity, mesh] of _npcMeshes) {
     if (!currentSet.has(entity)) {
-      mesh.geometry.dispose();
+      _disposeObj(mesh);
       _sceneRoot.remove(mesh);
       _npcMeshes.delete(entity);
     }
@@ -469,9 +546,10 @@ function _syncNPCs(G) {
   // Create or update mesh for each active non-capital enemy
   currentSet.forEach(e => {
     if (!_npcMeshes.has(e)) {
-      const mesh = _modelToMesh(e.model, e.col);
-      _sceneRoot.add(mesh);
-      _npcMeshes.set(e, mesh);
+      // Prefer a custom GLTF model; fall back to procedural convex hull.
+      const obj = assetsGetModel(e.hullKey) || _modelToMesh(e.model, e.col);
+      _sceneRoot.add(obj);
+      _npcMeshes.set(e, obj);
     }
     const mesh = _npcMeshes.get(e);
     mesh.position.set(e.pos.x, e.pos.y, e.pos.z);

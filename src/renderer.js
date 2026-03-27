@@ -11,6 +11,10 @@ function proj(cp){ const f=(H/2)/Math.tan(FOV/2); const x=CX+cp.x/cp.z*f; const 
 function drawHUD(){
   ctx.clearRect(0,0,W,H);
   if(!G)return;
+  // Cockpit bitmap — drawn first so all HUD elements render on top.
+  // To activate: set a path in ASSET_REGISTRY.cockpits in asset-loader.js.
+  const _cpImg = assetsGetCockpit(G.p.shipKey);
+  if (_cpImg) ctx.drawImage(_cpImg, 0, 0, W, H);
   const p=G.p, cPos=p.pos, cQ=p.ori;
 
   // Sun glow — kept in 2D overlay (sprite work is future)
@@ -209,6 +213,18 @@ function drawHUD(){
     ctx.font='bold 26px monospace';
     ctx.textAlign='center';
     ctx.fillText('⚠ PLANETARY ATMOSPHERE DANGER',CX,H*0.22);
+    ctx.globalAlpha=1;
+    ctx.restore();
+  }
+  // ── PROXIMITY ALARM ──
+  if(G._proxDanger && !G._atmoDanger){
+    const pulse=0.5+0.5*Math.abs(Math.sin(G.time*5));
+    ctx.save();
+    ctx.globalAlpha=0.45+0.55*pulse;
+    ctx.fillStyle='#ffdd00';
+    ctx.font='bold 26px monospace';
+    ctx.textAlign='center';
+    ctx.fillText('⚠ PROXIMITY ALARM',CX,H*0.22);
     ctx.globalAlpha=1;
     ctx.restore();
   }
@@ -1145,6 +1161,8 @@ function drawRadar(){
   });
   // Cargo boxes — small green dots
   G.cargoBoxes.forEach(box=>rPlot(box.pos,'#88ff44','d'));
+  // Asteroids — brownish dots
+  (G.asteroids||[]).forEach(ast=>rPlot(ast.pos,'#8B7355','d'));
   ctx.globalAlpha=1;
 
   ctx.fillStyle='#00ffcc';ctx.globalAlpha=.25;ctx.font='7px Courier New';ctx.textAlign='center';
@@ -1286,9 +1304,10 @@ function updHUD(){
   const wo=document.getElementById('warn-overlay');
   if(wo){
     let warnText='';
-    if(structLow)       warnText='⚠ STRUCTURAL INTEGRITY FAILING';
-    else if(armourGone) warnText='⚠ ARMOUR BREACH';
-    else if(fuelLow)    warnText='⚠ LOW FUEL';
+    if(structLow)            warnText='⚠ STRUCTURAL INTEGRITY FAILING';
+    else if(armourGone)      warnText='⚠ ARMOUR BREACH';
+    else if(fuelLow)         warnText='⚠ LOW FUEL';
+    else if(G._proxDanger)   warnText='⚠ PROXIMITY ALARM';
     if(warnText){ wo.textContent=warnText; wo.style.opacity='1'; }
     else wo.style.opacity='0';
   }

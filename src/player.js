@@ -353,6 +353,49 @@ function update(dt){
     document.getElementById('dock-prompt').textContent='[ M ] STAR MAP';
   }
 
+  // ── ORBITING PLANETS (moons) ──
+  G.planets?.forEach(pl=>{
+    if(!pl.orbitCenter || !pl.orbitSpeed) return;
+    pl.orbitAngle = (pl.orbitAngle||0) + pl.orbitSpeed * dt;
+    pl.pos.x = pl.orbitCenter.x + Math.cos(pl.orbitAngle) * pl.orbitRadius;
+    pl.pos.y = pl.orbitCenter.y;
+    pl.pos.z = pl.orbitCenter.z + Math.sin(pl.orbitAngle) * pl.orbitRadius;
+  });
+
+  // ── ORBITING STATIONS ──
+  // Runs after moon update so Luna Agri-Dome can read the Moon's updated pos.
+  G.stations?.forEach(st=>{
+    if(!st.orbitRadius) return;
+    let cx, cy, cz;
+    if(st.orbitParentName){
+      const parent = G.planets?.find(pl=>pl.name===st.orbitParentName);
+      if(!parent) return;
+      cx=parent.pos.x; cy=parent.pos.y; cz=parent.pos.z;
+    } else if(st.orbitCenter){
+      cx=st.orbitCenter.x; cy=st.orbitCenter.y; cz=st.orbitCenter.z;
+    } else return;
+    st.orbitAngle = (st.orbitAngle||0) + st.orbitSpeed * dt;
+    st.pos.x = cx + Math.cos(st.orbitAngle) * st.orbitRadius;
+    st.pos.y = cy + (st.orbitY||0);
+    st.pos.z = cz + Math.sin(st.orbitAngle) * st.orbitRadius;
+    // Keep landing zones locked to the station
+    st.landingZones?.forEach(lz=>{
+      if(!lz._offset) return;
+      lz.pos.x = st.pos.x + lz._offset.x;
+      lz.pos.y = st.pos.y + lz._offset.y;
+      lz.pos.z = st.pos.z + lz._offset.z;
+    });
+  });
+
+  // ── ORBITING ASTEROIDS ──
+  G.asteroids?.forEach(ast=>{
+    if(!ast.orbitCenter) return;
+    ast.orbitAngle = (ast.orbitAngle||0) + ast.orbitSpeed * dt;
+    ast.pos.x = ast.orbitCenter.x + Math.cos(ast.orbitAngle) * ast.orbitRadius;
+    ast.pos.y = ast.orbitCenter.y + ast.orbitY;
+    ast.pos.z = ast.orbitCenter.z + Math.sin(ast.orbitAngle) * ast.orbitRadius;
+  });
+
   // ── PLANET ATMOSPHERE & COLLISION ──
   G._atmoDanger=false;
   G.planets?.forEach(pl=>{
@@ -378,7 +421,36 @@ function update(dt){
     }
   });
 
-  sndAtmoDangerUpdate(G._atmoDanger);
+  // ── PROXIMITY ALARM — stations and asteroids ──
+  G._proxDanger = false;
+  G.stations.forEach(st=>{
+    if(v3len(v3sub(st.pos,p.pos)) < 350) G._proxDanger = true;
+  });
+
+  // ── ASTEROID COLLISION & PROXIMITY ALARM ──
+  G.asteroids?.forEach(ast=>{
+    const d=v3len(v3sub(ast.pos,p.pos));
+    if(d < ast.r*2.5) G._proxDanger = true;
+    if(d < ast.r){
+      const normal=v3norm(v3sub(p.pos,ast.pos));
+      const vDotN=v3dot(p.vel,normal);
+      if(vDotN<0){
+        const retention=0.25+Math.random()*0.25;
+        p.vel=v3add(p.vel,v3scale(normal,-vDotN*(1+retention)));
+        const spd=Math.abs(vDotN);
+        const dmg=Math.min(100,spd*0.3);
+        p.armour=Math.max(0,p.armour-dmg*0.6);
+        p.struct-=dmg*0.4;
+        if(!p._spinYaw) p._spinYaw=0; if(!p._spinPitch) p._spinPitch=0;
+        p._spinYaw+=(Math.random()-.5)*2.5;
+        p._spinPitch+=(Math.random()-.5)*2.5;
+        sndCollisionPlanet(spd);
+        flash('HULL BREACH — COLLISION DAMAGE');
+      }
+    }
+  });
+
+  sndAtmoDangerUpdate(G._atmoDanger || G._proxDanger);
 
   // ── STATION COLLISION ──
   G.stations.forEach(st=>{
@@ -434,6 +506,7 @@ function update(dt){
     st.landingZones?.forEach(lz=>{lz.rAngle+=.12*dt;});
   });
   G.pBases.forEach(pb=>{pb.rAngle+=.08*dt;});
+  G.asteroids?.forEach(ast=>{ast.rAngle=(ast.rAngle||0)+(ast.rSpeed||0.02)*dt;});
 
   // Bullets
   // Bullets — cap arrays for safety

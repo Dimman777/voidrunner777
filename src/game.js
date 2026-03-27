@@ -58,7 +58,9 @@ function init(){
     stations:s.stations.map(st=>({...st,model:scaleM(M_STATION,12),rAngle:0,dockR:220,landingZones:buildLandingZones(st.pos)})),
     pBases:s.pBases.map(pb=>({...pb,model:scaleM(M_PBASE,15),rAngle:Math.random()*PI2})),
     launchZone:s.launchZone ? {...s.launchZone,model:scaleM(M_STATION,6),rAngle:0} : null,
-    planets:s.planets,
+    // Shallow-copy each planet so orbital pos mutations don't corrupt SYS static data
+    planets:s.planets.map(pl=>({...pl,pos:{x:pl.pos.x,y:pl.pos.y,z:pl.pos.z}})),
+    asteroids:[],  // filled below after G.pBases exists
     enemies:[],bullets:[],eBullets:[],parts:[],bgStars:[],
     cargoBoxes:[],
     distressPings:[],
@@ -73,6 +75,8 @@ function init(){
     navIdx:-1, navTarget:null,
     spawnT:0,nearSt:null,nearLZ:false,
   };
+
+  G.asteroids = buildAsteroids(G.pBases);
 
   // Calculate derived physics from equipment
   calcPlayerPhysics(G.p);
@@ -116,6 +120,38 @@ function init(){
 
 function pickStation(){ return G.stations[Math.floor(Math.random()*G.stations.length)]; }
 
+// ── ASTEROID FIELDS ──────────────────────────────────────────
+// Generates 4-6 large rocky asteroids clustered around each pirate base.
+// Rocky colours — subtle variation per asteroid.
+const _AST_COLS = ['#7a6a55','#8B7355','#6B5B4A','#9A8060','#5A4F42','#857060'];
+
+function buildAsteroids(pBases){
+  const asts = [];
+  pBases.forEach(pb=>{
+    const count = 8 + Math.floor(Math.random()*4); // 8–11 per base
+    for(let i=0;i<count;i++){
+      const a   = Math.random()*PI2;
+      const d   = 160 + Math.random()*880;          // 160–1040 u — base sits in the middle
+      const yOff = (Math.random()-.5)*240;
+      const r   = 85 + Math.random()*75;            // collision radius 85–160 u
+      asts.push({
+        pos: v3add(pb.pos, v3(Math.cos(a)*d, yOff, Math.sin(a)*d)),
+        r,
+        col: _AST_COLS[Math.floor(Math.random()*_AST_COLS.length)],
+        rAngle: Math.random()*PI2,
+        rSpeed: 0.012 + Math.random()*0.020, // slow tumble
+        // Orbital parameters — asteroid circles its pirate base
+        orbitCenter: {x:pb.pos.x, y:pb.pos.y, z:pb.pos.z},
+        orbitRadius: d,
+        orbitAngle: a,
+        orbitY: yOff,
+        orbitSpeed: 0.0015 + Math.random()*0.002, // very slow orbital drift
+      });
+    }
+  });
+  return asts;
+}
+
 const _LZ_CUBE = (function(){
   const s=14;
   return {
@@ -132,8 +168,10 @@ function buildLandingZones(stPos){
   for(let i=0;i<6;i++){
     const a=(i/6)*PI2;
     const yOff=(i%2===0?1:-1)*30;
+    const offset=v3(Math.cos(a)*220,yOff,Math.sin(a)*220);
     lzs.push({
-      pos:v3add(stPos,v3(Math.cos(a)*220,yOff,Math.sin(a)*220)),
+      pos:v3add(stPos,offset),
+      _offset:offset,   // kept so orbit update can recompute pos when station moves
       model:_LZ_CUBE,
       rAngle:Math.random()*PI2,
     });
@@ -323,10 +361,11 @@ function loadSystem(sysKey){
   G.mode='space';
 
   // Rebuild world objects for new system
-  G.stations=s.stations.map(st=>({...st,model:scaleM(M_STATION,12),rAngle:0,dockR:220,landingZones:buildLandingZones(st.pos)}));
+  G.stations=s.stations.map(st=>({...st,pos:{x:st.pos.x,y:st.pos.y,z:st.pos.z},model:scaleM(M_STATION,12),rAngle:0,dockR:220,landingZones:buildLandingZones(st.pos)}));
   G.pBases=s.pBases.map(pb=>({...pb,model:scaleM(M_PBASE,15),rAngle:Math.random()*PI2}));
   G.launchZone=s.launchZone ? {...s.launchZone,model:scaleM(M_STATION,6),rAngle:0} : null;
-  G.planets=s.planets;
+  G.planets=s.planets.map(pl=>({...pl,pos:{x:pl.pos.x,y:pl.pos.y,z:pl.pos.z}}));
+  G.asteroids=buildAsteroids(G.pBases);
 
   // Clear combat state
   G.enemies=[]; G.bullets=[]; G.eBullets=[]; G.parts=[];
@@ -451,11 +490,12 @@ window.pickStartWpn = function(el, type){
   el.classList.add('selected');
 };
 
-document.getElementById('start-btn').onclick=()=>{
+document.getElementById('start-btn').onclick=async ()=>{
   invertPitch = document.getElementById('invert-pitch').checked;
   document.getElementById('title-screen').style.display='none';
   mX=null; mY=null; mDown=false; // discard button-click mouse position
   try {
+    await assetsInit();    // load custom models/sounds/cockpits (no-op if registry is empty)
     initScene();           // one-time Three.js setup
     init();                // game state
     initSceneForSystem(G); // build 3D scene for starting system
@@ -466,11 +506,12 @@ document.getElementById('start-btn').onclick=()=>{
     document.body.innerHTML=`<pre style="color:#ff4444;padding:30px;font-size:13px">STARTUP ERROR:\n${err.message}\n\n${err.stack}</pre>`;
   }
 };
-document.getElementById('devmode-btn').onclick=()=>{
+document.getElementById('devmode-btn').onclick=async ()=>{
   invertPitch = document.getElementById('invert-pitch').checked;
   document.getElementById('title-screen').style.display='none';
   mX=null; mY=null; mDown=false;
   try {
+    await assetsInit();
     initScene();
     init();
     G.p.credits = 10000000;

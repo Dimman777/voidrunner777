@@ -22,6 +22,7 @@ function _distGain(dist, maxDist){
 
 // Autocannon — short percussive crack
 function sndAutocannon(){
+  if (assetsPlaySound('autocannon', 0.38)) return;
   const ctx=_ctx(); if(!ctx) return;
   const dur=0.09;
   const buf=ctx.createBuffer(1, ctx.sampleRate*dur, ctx.sampleRate);
@@ -40,6 +41,7 @@ function sndAutocannon(){
 
 // Laser — descending tone zap
 function sndLaser(){
+  if (assetsPlaySound('laser', 0.28)) return;
   const ctx=_ctx(); if(!ctx) return;
   const now=ctx.currentTime;
   const osc=ctx.createOscillator();
@@ -59,6 +61,7 @@ function sndLaser(){
 
 // Hypervelocity — deep resonant thud
 function sndHypervelocity(){
+  if (assetsPlaySound('hypervelocity', 0.55)) return;
   const ctx=_ctx(); if(!ctx) return;
   const dur=0.35;
   const buf=ctx.createBuffer(1, ctx.sampleRate*dur, ctx.sampleRate);
@@ -81,6 +84,7 @@ function sndHypervelocity(){
 
 // Armour hit — metallic clang
 function sndArmourHit(){
+  if (assetsPlaySound('armour_hit', 0.33)) return;
   const ctx=_ctx(); if(!ctx) return;
   const now=ctx.currentTime;
   const osc=ctx.createOscillator();
@@ -96,6 +100,7 @@ function sndArmourHit(){
 
 // Struct hit — heavy thud with rumble
 function sndStructHit(){
+  if (assetsPlaySound('struct_hit', 0.65)) return;
   const ctx=_ctx(); if(!ctx) return;
   const dur=0.55;
   const buf=ctx.createBuffer(1, ctx.sampleRate*dur, ctx.sampleRate);
@@ -255,6 +260,7 @@ function sndEngineUpdate(isThrusting, isBoost, volScale){
 
 // NPC armour hit — heard within weapon range
 function sndNPCArmourHit(dist, maxDist){
+  if (assetsPlaySoundDist('npc_armour_hit', 0.18, dist, maxDist)) return;
   const ctx=_ctx(); if(!ctx) return;
   const vol=_distGain(dist,maxDist); if(vol<0.04) return;
   const now=ctx.currentTime;
@@ -271,6 +277,7 @@ function sndNPCArmourHit(dist, maxDist){
 
 // NPC struct hit — heavier, heard within weapon range
 function sndNPCStructHit(dist, maxDist){
+  if (assetsPlaySoundDist('npc_struct_hit', 0.38, dist, maxDist)) return;
   const ctx=_ctx(); if(!ctx) return;
   const vol=_distGain(dist,maxDist); if(vol<0.04) return;
   const dur=0.22;
@@ -291,6 +298,7 @@ function sndNPCStructHit(dist, maxDist){
 
 // Explosion — deep boom + noise, heard at up to ~2× weapon range
 function sndExplosion(dist, maxDist){
+  if (assetsPlaySoundDist('explosion', 0.72, dist, maxDist)) return;
   const ctx=_ctx(); if(!ctx) return;
   const vol=_distGain(dist,maxDist); if(vol<0.02) return;
   const dur=0.85;
@@ -314,6 +322,7 @@ function sndExplosion(dist, maxDist){
 
 // Two-beep warning tone
 function sndAlarm(){
+  if (assetsPlaySound('alarm', 0.14)) return;
   const ctx=_ctx(); if(!ctx) return;
   const now=ctx.currentTime;
   for(let i=0;i<2;i++){
@@ -420,6 +429,7 @@ function sndCollisionStation(impactSpd){
   _lastStationHit=now;
   const vol=Math.min(1, impactSpd/100);
   if(vol<0.04) return;
+  if (assetsPlaySound('collision_station', vol*0.80)) return;
   const dur=0.70;
   const buf=ctx.createBuffer(1, ctx.sampleRate*dur, ctx.sampleRate);
   const d=buf.getChannelData(0);
@@ -451,6 +461,7 @@ function sndCollisionPlanet(impactSpd){
   _lastPlanetHit=now;
   const vol=Math.min(1, impactSpd/100);
   if(vol<0.04) return;
+  if (assetsPlaySound('collision_planet', vol*0.85)) return;
   const dur=1.10;
   const buf=ctx.createBuffer(1, ctx.sampleRate*dur, ctx.sampleRate);
   const d=buf.getChannelData(0);

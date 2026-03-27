@@ -9,8 +9,12 @@ function spawnCapital(homeObj, overrideFid, isHostile){
   const type = Math.random() < dreadChance ? 'dreadnought' : 'frigate';
   const def = CAP_DEFS[type];
 
-  const a=Math.random()*PI2, d=300+Math.random()*400;
-  const pos = v3add(homeObj.pos, v3(Math.cos(a)*d,(Math.random()-.5)*80,Math.sin(a)*d));
+  let pos, _tries=0;
+  do {
+    const a=Math.random()*PI2, d=300+Math.random()*400;
+    pos = v3add(homeObj.pos, v3(Math.cos(a)*d,(Math.random()-.5)*80,Math.sin(a)*d));
+    _tries++;
+  } while(_tries<8 && G.asteroids?.some(ast=>v3len(v3sub(pos,ast.pos))<ast.r+60));
 
   const components = def.components.map(c=>({
     name:c.name, hp:c.hp, maxHp:c.hp, isCore:c.isCore,
@@ -134,8 +138,12 @@ function spawnNPC(aiRole, factionCol, stationA, stationB, pirateBase){
   // Position — mercs and cargo spawn near stations, not random
   let pos;
   if(pirateBase){
-    const a=Math.random()*PI2, d=200+Math.random()*400;
-    pos = v3add(pirateBase.pos, v3(Math.cos(a)*d, (Math.random()-.5)*100, Math.sin(a)*d));
+    let tries=0;
+    do {
+      const a=Math.random()*PI2, d=200+Math.random()*400;
+      pos = v3add(pirateBase.pos, v3(Math.cos(a)*d, (Math.random()-.5)*100, Math.sin(a)*d));
+      tries++;
+    } while(tries<8 && G.asteroids?.some(ast=>v3len(v3sub(pos,ast.pos))<ast.r+30));
   } else if(stationA){
     const a=Math.random()*PI2, d=150+Math.random()*500;
     pos = v3add(stationA.pos, v3(Math.cos(a)*d, (Math.random()-.5)*100, Math.sin(a)*d));
@@ -563,6 +571,16 @@ function moveNPC(e, dt, doThrust){
         e.vel=v3add(e.vel,v3scale(v3norm(toE),strength*dt));
       }
     });
+    // Asteroid repulsion — keep NPCs outside radius + clearance
+    G.asteroids?.forEach(ast=>{
+      const toE=v3sub(e.pos,ast.pos);
+      const d=v3len(toE);
+      const thresh=ast.r+(e.sz||10)+50;
+      if(d<thresh && d>0.1){
+        const strength=(1-d/thresh)*e.baseSpd*3;
+        e.vel=v3add(e.vel,v3scale(v3norm(toE),strength*dt));
+      }
+    });
   }
 
   // Passive drift drag — always applied (2D: vx *= pow(0.999, dt*60))
@@ -661,6 +679,39 @@ function pirateSiblings(e){
     p.aiRole==='pirate' && p!==e && p.homeBase &&
     v3len(v3sub(p.homeBase.pos, e.homeBase.pos)) < 50
   ).length + 1;
+}
+
+// Freighter path-avoidance: returns a lateral waypoint that steers around any
+// pirate base whose centre falls within _DETOUR_R of the direct path pos→dest.
+// Returns dest unchanged when the route is already clear.
+const _DETOUR_R = 2200; // u — threat radius around each pirate base
+function _cargoDetour(pos, dest){
+  const toD = v3sub(dest, pos);
+  const distToDest = v3len(toD);
+  if(distToDest < 400) return dest; // already on final approach
+  const dir = v3scale(toD, 1/distToDest);
+
+  let bestAlong = -1, bestPerp = Infinity, bestPerpVec = null;
+  G.pBases.forEach(pb=>{
+    const toPb = v3sub(pb.pos, pos);
+    const along = v3dot(toPb, dir);
+    if(along < 50 || along > distToDest - 50) return; // behind or beyond dest
+    const perpVec = v3sub(toPb, v3scale(dir, along));
+    const perpDist = v3len(perpVec);
+    if(perpDist < _DETOUR_R && perpDist < bestPerp){
+      bestPerp = perpDist; bestAlong = along; bestPerpVec = perpVec;
+    }
+  });
+
+  if(bestAlong < 0) return dest; // path is clear
+
+  // Closest point on straight path to the threatening base
+  const closestPt = v3add(pos, v3scale(dir, bestAlong));
+  // Push direction: away from the pirate base (negate perpVec)
+  const pushDir = bestPerp > 0.1
+    ? v3scale(bestPerpVec, -1/bestPerp)
+    : v3(dir.z, 0, -dir.x); // fallback when base is exactly on the path
+  return v3add(closestPt, v3scale(pushDir, _DETOUR_R * 1.4));
 }
 
 function updEnemies(dt){
@@ -1168,7 +1219,14 @@ function updEnemies(dt){
           e.aiT = 2+Math.random()*4;
           const a=Math.random()*PI2;
           const home = e.homeBase ? e.homeBase.pos : e.pos;
-          e.patT = v3add(home, v3(Math.cos(a)*cfg.baseR,(Math.random()-.5)*80,Math.sin(a)*cfg.baseR));
+          let pt = v3add(home, v3(Math.cos(a)*cfg.baseR,(Math.random()-.5)*80,Math.sin(a)*cfg.baseR));
+          // Nudge patrol point out of any asteroid
+          G.asteroids?.forEach(ast=>{
+            const diff=v3sub(pt,ast.pos), dist=v3len(diff);
+            if(dist < ast.r*1.5 && dist > 0.1)
+              pt = v3add(pt, v3scale(v3norm(diff), ast.r*1.5 - dist));
+          });
+          e.patT = pt;
         }
         steerTo(e, e.patT, dt);
         moveNPC(e, dt, v3len(v3sub(e.patT,e.pos)) > 80);
@@ -1259,7 +1317,13 @@ function updEnemies(dt){
             e.aiT = 3+Math.random()*5;
             const a=Math.random()*PI2;
             const home = e.homeBase ? e.homeBase.pos : e.pos;
-            e.patT = v3add(home, v3(Math.cos(a)*cfg.baseR*4,(Math.random()-.5)*150,Math.sin(a)*cfg.baseR*4));
+            let pt2 = v3add(home, v3(Math.cos(a)*cfg.baseR*4,(Math.random()-.5)*150,Math.sin(a)*cfg.baseR*4));
+            G.asteroids?.forEach(ast=>{
+              const diff2=v3sub(pt2,ast.pos), dist2=v3len(diff2);
+              if(dist2 < ast.r*1.5 && dist2 > 0.1)
+                pt2 = v3add(pt2, v3scale(v3norm(diff2), ast.r*1.5 - dist2));
+            });
+            e.patT = pt2;
           }
           steerTo(e, e.patT, dt);
           moveNPC(e, dt, true);
@@ -1284,10 +1348,19 @@ function updEnemies(dt){
           e.aiSt = 'patrol'; e._attacker = null;
         }
       } else {
-        // Navigate route A → B
+        // Navigate route A → B, detouring around pirate bases
         const tgt = e.patT || (e.routeB ? e.routeB.pos : null);
         if(tgt){
-          steerTo(e, tgt, dt);
+          // Recompute detour waypoint every 3-5 s
+          if(!e._detourT || e._detourT <= 0){
+            e._detourT = 3 + Math.random()*2;
+            e._detourWp = _cargoDetour(e.pos, tgt);
+          }
+          e._detourT -= dt;
+          // Use detour waypoint until we're close to it, then head straight to dest
+          const steerTgt = (e._detourWp && v3len(v3sub(e._detourWp, e.pos)) > 200)
+            ? e._detourWp : tgt;
+          steerTo(e, steerTgt, dt);
           moveNPC(e, dt, true);
           // Reached destination — give assets to station faction, despawn, queue respawn
           if(v3len(v3sub(e.pos, tgt)) < AI_CFG.cargo.dockR){

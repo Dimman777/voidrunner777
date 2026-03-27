@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VOIDRUNNER — VECTOR</title>
+<!-- Importmap: resolves 'three' bare specifier for GLTFLoader dynamic import in asset-loader.js -->
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#000; overflow:hidden; cursor:none; font-family:'Courier New',monospace; }
@@ -390,6 +394,7 @@ canvas { display:block; }
 <script src="src/missions.js"></script>
 <script src="src/trading-ui.js"></script>
 <script src="src/sound.js"></script>
+<script src="src/asset-loader.js"></script>
 <script src="src/renderer.js"></script>
 <script src="src/renderer-threejs.js"></script>
 <script src="src/game.js"></script>
